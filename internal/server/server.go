@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"net"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -10,9 +11,12 @@ import (
 	"github.com/siderolabs/go-loadbalancer/upstream"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/lexfrei/extractedprism/internal/config"
 	"github.com/lexfrei/extractedprism/internal/discovery"
+	kubediscovery "github.com/lexfrei/extractedprism/internal/discovery/kubernetes"
 	"github.com/lexfrei/extractedprism/internal/discovery/merged"
 	"github.com/lexfrei/extractedprism/internal/discovery/static"
 	"github.com/lexfrei/extractedprism/internal/health"
@@ -22,7 +26,18 @@ const (
 	keepAlivePeriod = 30 * time.Second
 	tcpUserTimeout  = 30 * time.Second
 	shutdownTimeout = 5 * time.Second
+	defaultAPIPort  = "6443"
 )
+
+// Option configures a Server.
+type Option func(*Server)
+
+// WithKubeClient injects a pre-built Kubernetes client for endpoint discovery.
+func WithKubeClient(client kubernetes.Interface) Option {
+	return func(srv *Server) {
+		srv.kubeClient = client
+	}
+}
 
 // Server ties together the load balancer, endpoint discovery, and health checking.
 type Server struct {
@@ -31,10 +46,11 @@ type Server struct {
 	lbHandle   *controlplane.LoadBalancer
 	healthSrv  *health.Server
 	upstreamCh chan []string
+	kubeClient kubernetes.Interface
 }
 
 // New creates a Server from the given config.
-func New(cfg *config.Config, logger *zap.Logger) (*Server, error) {
+func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error) {
 	err := cfg.Validate()
 	if err != nil {
 		return nil, errors.Wrap(err, "invalid config")
@@ -50,6 +66,10 @@ func New(cfg *config.Config, logger *zap.Logger) (*Server, error) {
 		logger:     logger,
 		lbHandle:   lbHandle,
 		upstreamCh: make(chan []string, 1),
+	}
+
+	for _, opt := range opts {
+		opt(srv)
 	}
 
 	srv.healthSrv = health.NewServer(cfg.BindAddress, cfg.HealthPort, srv, logger)
@@ -125,12 +145,76 @@ func (srv *Server) runDiscovery(ctx context.Context) error {
 }
 
 func (srv *Server) buildProviders() ([]discovery.EndpointProvider, error) {
-	sp, err := static.NewStaticProvider(srv.cfg.Endpoints)
+	staticProv, err := static.NewStaticProvider(srv.cfg.Endpoints)
 	if err != nil {
 		return nil, errors.Wrap(err, "create static provider")
 	}
 
-	return []discovery.EndpointProvider{sp}, nil
+	providers := []discovery.EndpointProvider{staticProv}
+
+	if srv.cfg.EnableDiscovery {
+		kubeProv, kubeErr := srv.buildKubeProvider()
+		if kubeErr != nil {
+			srv.logger.Warn("kubernetes discovery unavailable, using static endpoints only",
+				zap.Error(kubeErr))
+		} else {
+			providers = append(providers, kubeProv)
+		}
+	}
+
+	return providers, nil
+}
+
+func (srv *Server) buildKubeProvider() (discovery.EndpointProvider, error) {
+	client, err := srv.getKubeClient()
+	if err != nil {
+		return nil, err
+	}
+
+	apiPort := extractAPIPort(srv.cfg.Endpoints)
+
+	return kubediscovery.NewProvider(client, srv.logger, apiPort), nil
+}
+
+func (srv *Server) getKubeClient() (kubernetes.Interface, error) {
+	if srv.kubeClient != nil {
+		return srv.kubeClient, nil
+	}
+
+	return buildInClusterClient(srv.cfg.Endpoints)
+}
+
+func buildInClusterClient(endpoints []string) (kubernetes.Interface, error) {
+	restCfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, errors.Wrap(err, "in-cluster config")
+	}
+
+	// Override host to bypass ClusterIP. extractedprism provides the LB
+	// that CNI uses, so we cannot depend on cluster networking.
+	if len(endpoints) > 0 {
+		restCfg.Host = "https://" + endpoints[0]
+	}
+
+	client, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, errors.Wrap(err, "create kubernetes client")
+	}
+
+	return client, nil
+}
+
+func extractAPIPort(endpoints []string) string {
+	if len(endpoints) == 0 {
+		return defaultAPIPort
+	}
+
+	_, port, err := net.SplitHostPort(endpoints[0])
+	if err != nil {
+		return defaultAPIPort
+	}
+
+	return port
 }
 
 func (srv *Server) runHealth(ctx context.Context) error {
