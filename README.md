@@ -229,4 +229,4 @@ Requirements:
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) for the full text.
+BSD 3-Clause License. See [LICENSE](LICENSE) for the full text.
