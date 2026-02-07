@@ -26,6 +26,26 @@ func newTestLogger() *zap.Logger {
 	return zap.NewNop()
 }
 
+func makeNamedEndpointSlice(name string, ips ...string) *discoveryv1.EndpointSlice {
+	endpoints := make([]discoveryv1.Endpoint, 0, len(ips))
+	for _, addr := range ips {
+		endpoints = append(endpoints, discoveryv1.Endpoint{
+			Addresses: []string{addr},
+		})
+	}
+
+	return &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			Labels: map[string]string{
+				"kubernetes.io/service-name": "kubernetes",
+			},
+		},
+		Endpoints: endpoints,
+	}
+}
+
 func makeEndpointSlice(ips ...string) *discoveryv1.EndpointSlice {
 	endpoints := make([]discoveryv1.Endpoint, 0, len(ips))
 	for _, addr := range ips {
@@ -385,6 +405,79 @@ func TestRun_DeletedEndpoint(t *testing.T) {
 
 	endpoints := receiveEndpoints(t, updateCh)
 	assert.Empty(t, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestRun_MultiSliceUpdatePreservesOtherSlices(t *testing.T) {
+	slice1 := makeNamedEndpointSlice("kubernetes-abc", "10.0.0.1")
+	slice2 := makeNamedEndpointSlice("kubernetes-def", "10.0.0.2")
+	client := fake.NewClientset(slice1, slice2)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Initial list should contain endpoints from both slices.
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints)
+
+	// Update slice1 to add a new endpoint; slice2 endpoints must be preserved.
+	updated := makeNamedEndpointSlice("kubernetes-abc", "10.0.0.1", "10.0.0.3")
+	updated.ResourceVersion = "2"
+	fakeWatcher.Modify(updated)
+
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t,
+		[]string{"10.0.0.1:6443", "10.0.0.2:6443", "10.0.0.3:6443"},
+		endpoints,
+	)
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestRun_MultiSliceDeletePreservesOtherSlices(t *testing.T) {
+	slice1 := makeNamedEndpointSlice("kubernetes-abc", "10.0.0.1")
+	slice2 := makeNamedEndpointSlice("kubernetes-def", "10.0.0.2")
+	client := fake.NewClientset(slice1, slice2)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Initial list should contain endpoints from both slices.
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints)
+
+	// Delete slice1; slice2 endpoints must be preserved.
+	fakeWatcher.Delete(slice1)
+
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.2:6443"}, endpoints)
 
 	cancel()
 	waitForRun(t, errCh)
