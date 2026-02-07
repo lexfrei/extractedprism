@@ -1,0 +1,309 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --timeout=5m
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+  build-and-push:
+    name: Build and Push
+    needs: [lint, test]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Prepare platform identifier
+        id: platform
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "pair=${platform//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.description=Per-node TCP load balancer for Kubernetes API server high availability
+
+      - name: Build and Push by Digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Containerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ steps.platform.outputs.pair }}
+          cache-to: type=gha,scope=build-${{ steps.platform.outputs.pair }},mode=max
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+            REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v6
+        with:
+          name: digests-${{ steps.platform.outputs.pair }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-manifests:
+    name: Merge Manifests
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download digests
+        uses: actions/download-artifact@v7
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.description=Per-node TCP load balancer for Kubernetes API server high availability
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+
+          mapfile -t tag_args < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+
+          images=()
+          for digest_file in *; do
+            [[ -f "$digest_file" ]] || continue
+            images+=("ghcr.io/${{ github.repository }}@sha256:${digest_file}")
+          done
+
+          docker buildx imagetools create "${tag_args[@]}" "${images[@]}"
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign container images
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          mapfile -t tags < <(echo "$DOCKER_METADATA_OUTPUT_TAGS" | tr '\n' ' ' | xargs -n1)
+          for tag in "${tags[@]}"; do
+            echo "Signing ${tag}"
+            cosign sign --yes "${tag}"
+          done
+
+      - name: Generate container summary
+        run: |
+          IMAGE_TAG="${{ fromJSON(steps.meta.outputs.json).tags[0] }}"
+          MANIFEST_DIGEST=$(docker buildx imagetools inspect "${IMAGE_TAG}" --format '{{.Manifest.Digest}}')
+
+          {
+            echo "## Container Image"
+            echo ""
+            echo "### Image Tags"
+            echo '```'
+            echo "$DOCKER_METADATA_OUTPUT_TAGS"
+            echo '```'
+            echo ""
+            echo "### Platforms"
+            docker buildx imagetools inspect "${IMAGE_TAG}" --format '{{range .Manifest.Manifests}}- {{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}}{{"\n"}}{{end}}'
+            echo ""
+            echo "### Manifest Digest"
+            echo "\`${MANIFEST_DIGEST}\`"
+            echo ""
+            echo "### Signature"
+            echo "Image is signed with cosign using keyless signing (Sigstore)"
+            echo ""
+            echo "**Verify signature:**"
+            echo '```bash'
+            echo "cosign verify ${IMAGE_TAG} --certificate-identity-regexp=https://github.com/${{ github.repository }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: merge-manifests
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${CURRENT_TAG}$" | head -1)
+
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log "${PREV_TAG}..HEAD" --format="%s" --no-merges)
+          else
+            COMMITS=$(git log --format="%s" --no-merges)
+          fi
+
+          CHANGELOG_SECTION=""
+          while IFS= read -r commit; do
+            [ -z "$commit" ] && continue
+
+            if [[ "$commit" =~ ^(feat|fix|security|refactor|docs|perf|build)(\([^\)]+\))?:\ (.+)$ ]]; then
+              TYPE="${BASH_REMATCH[1]}"
+              SCOPE="${BASH_REMATCH[2]}"
+              DESC="${BASH_REMATCH[3]}"
+              SCOPE="${SCOPE#\(}"; SCOPE="${SCOPE%\)}"
+
+              case "$TYPE" in
+                feat) emoji="added" ;;
+                fix) emoji="fixed" ;;
+                security) emoji="security" ;;
+                *) emoji="changed" ;;
+              esac
+
+              if [ -n "$SCOPE" ]; then
+                CHANGELOG_SECTION="${CHANGELOG_SECTION}- **${emoji}**: ${SCOPE}: ${DESC}"$'\n'
+              else
+                CHANGELOG_SECTION="${CHANGELOG_SECTION}- **${emoji}**: ${DESC}"$'\n'
+              fi
+            fi
+          done <<< "$COMMITS"
+
+          if [ -z "$CHANGELOG_SECTION" ]; then
+            CHANGELOG_SECTION="No user-facing changes in this release."
+          fi
+
+          IMAGE_REPO="ghcr.io/${{ github.repository }}"
+
+          {
+            echo "## Changelog"
+            echo ""
+            echo "${CHANGELOG_SECTION}"
+            echo "## Container Image"
+            echo ""
+            echo '```bash'
+            echo "podman pull ${IMAGE_REPO}:${VERSION}"
+            echo '```'
+            echo ""
+            echo "## Verification"
+            echo ""
+            echo '```bash'
+            echo "cosign verify \\"
+            echo "  ${IMAGE_REPO}:${VERSION} \\"
+            echo "  --certificate-identity-regexp=https://github.com/${{ github.repository }} \\"
+            echo "  --certificate-oidc-issuer=https://token.actions.githubusercontent.com"
+            echo '```'
+          } > release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
