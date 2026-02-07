@@ -161,6 +161,52 @@ func TestRun_WithDiscoveryEnabled(t *testing.T) {
 	}
 }
 
+func TestExtractAPIPort(t *testing.T) {
+	tests := []struct {
+		name      string
+		endpoints []string
+		expected  string
+	}{
+		{
+			name:      "standard port",
+			endpoints: []string{"172.16.101.1:6443"},
+			expected:  "6443",
+		},
+		{
+			name:      "custom port",
+			endpoints: []string{"10.0.0.1:8443"},
+			expected:  "8443",
+		},
+		{
+			name:      "empty endpoints returns default",
+			endpoints: []string{},
+			expected:  "6443",
+		},
+		{
+			name:      "nil endpoints returns default",
+			endpoints: nil,
+			expected:  "6443",
+		},
+		{
+			name:      "malformed endpoint returns default",
+			endpoints: []string{"not-a-host-port"},
+			expected:  "6443",
+		},
+		{
+			name:      "uses first endpoint only",
+			endpoints: []string{"10.0.0.1:9443", "10.0.0.2:8443"},
+			expected:  "9443",
+		},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			result := server.ExtractAPIPort(tcase.endpoints)
+			assert.Equal(t, tcase.expected, result)
+		})
+	}
+}
+
 func TestRun_DiscoveryFallbackWithoutCluster(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	cfg := validConfig()

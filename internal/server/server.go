@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -171,7 +172,7 @@ func (srv *Server) buildKubeProvider() (discovery.EndpointProvider, error) {
 		return nil, err
 	}
 
-	apiPort := extractAPIPort(srv.cfg.Endpoints)
+	apiPort := ExtractAPIPort(srv.cfg.Endpoints)
 
 	return kubediscovery.NewProvider(client, srv.logger, apiPort), nil
 }
@@ -193,7 +194,12 @@ func buildInClusterClient(endpoints []string) (kubernetes.Interface, error) {
 	// Override host to bypass ClusterIP. extractedprism provides the LB
 	// that CNI uses, so we cannot depend on cluster networking.
 	if len(endpoints) > 0 {
-		restCfg.Host = "https://" + endpoints[0]
+		host := endpoints[0]
+		if !strings.HasPrefix(host, "https://") {
+			host = "https://" + host
+		}
+
+		restCfg.Host = host
 	}
 
 	client, err := kubernetes.NewForConfig(restCfg)
@@ -204,7 +210,8 @@ func buildInClusterClient(endpoints []string) (kubernetes.Interface, error) {
 	return client, nil
 }
 
-func extractAPIPort(endpoints []string) string {
+// ExtractAPIPort returns the port from the first endpoint, or "6443" as default.
+func ExtractAPIPort(endpoints []string) string {
 	if len(endpoints) == 0 {
 		return defaultAPIPort
 	}
