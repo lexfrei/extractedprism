@@ -1,0 +1,151 @@
+package health_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/cockroachdb/errors"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+
+	"github.com/lexfrei/extractedprism/internal/health"
+)
+
+type mockChecker struct {
+	healthy bool
+	err     error
+}
+
+func (m *mockChecker) Healthy() (bool, error) {
+	return m.healthy, m.err
+}
+
+func newTestLogger() *zap.Logger {
+	return zap.NewNop()
+}
+
+func TestHealthz_Returns200(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ok\n", rec.Body.String())
+}
+
+func TestReadyz_HealthyReturns200(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ok\n", rec.Body.String())
+}
+
+func TestReadyz_UnhealthyReturns503(t *testing.T) {
+	checker := &mockChecker{healthy: false}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "not ready: health check failed\n", rec.Body.String())
+}
+
+func TestReadyz_ErrorReturns503(t *testing.T) {
+	checker := &mockChecker{
+		healthy: false,
+		err:     errors.New("connection refused"),
+	}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "not ready: connection refused\n", rec.Body.String())
+}
+
+func TestUnknownPathReturns404(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	paths := []string{"/", "/health", "/ready", "/metrics", "/foo"}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+
+			srv.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusNotFound, rec.Code)
+		})
+	}
+}
+
+func TestShutdown(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- srv.Start()
+	}()
+
+	// Give the server time to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify the server is listening by making a request.
+	addr := srv.Addr()
+	require.NotEmpty(t, addr)
+
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer reqCancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://"+addr+"/healthz", nil)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "ok\n", string(body))
+
+	// Shut down the server.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = srv.Shutdown(ctx)
+	require.NoError(t, err)
+
+	// Start should have returned nil (graceful shutdown via ErrServerClosed).
+	select {
+	case startErr := <-errCh:
+		assert.NoError(t, startErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Start to return")
+	}
+}
