@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -58,16 +60,24 @@ func registerFlags() {
 func bindEnvVars() {
 	viper.SetEnvPrefix("EP")
 
-	_ = viper.BindPFlag("bind_address", rootCmd.PersistentFlags().Lookup("bind-address"))
-	_ = viper.BindPFlag("bind_port", rootCmd.PersistentFlags().Lookup("bind-port"))
-	_ = viper.BindPFlag("health_port", rootCmd.PersistentFlags().Lookup("health-port"))
-	_ = viper.BindPFlag("endpoints", rootCmd.PersistentFlags().Lookup("endpoints"))
-	_ = viper.BindPFlag("health_interval", rootCmd.PersistentFlags().Lookup("health-interval"))
-	_ = viper.BindPFlag("health_timeout", rootCmd.PersistentFlags().Lookup("health-timeout"))
-	_ = viper.BindPFlag("enable_discovery", rootCmd.PersistentFlags().Lookup("enable-discovery"))
-	_ = viper.BindPFlag("log_level", rootCmd.PersistentFlags().Lookup("log-level"))
+	flags := rootCmd.PersistentFlags()
+
+	mustBindPFlag("bind_address", flags.Lookup("bind-address"))
+	mustBindPFlag("bind_port", flags.Lookup("bind-port"))
+	mustBindPFlag("health_port", flags.Lookup("health-port"))
+	mustBindPFlag("endpoints", flags.Lookup("endpoints"))
+	mustBindPFlag("health_interval", flags.Lookup("health-interval"))
+	mustBindPFlag("health_timeout", flags.Lookup("health-timeout"))
+	mustBindPFlag("enable_discovery", flags.Lookup("enable-discovery"))
+	mustBindPFlag("log_level", flags.Lookup("log-level"))
 
 	viper.AutomaticEnv()
+}
+
+func mustBindPFlag(key string, flag *pflag.Flag) {
+	if err := viper.BindPFlag(key, flag); err != nil {
+		panic(fmt.Sprintf("bind flag %q: %v", key, err))
+	}
 }
 
 func run(_ *cobra.Command, _ []string) error {
