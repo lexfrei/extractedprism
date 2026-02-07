@@ -1,0 +1,147 @@
+version: "2"
+
+linters:
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+    - gochecknoinits
+    - wsl
+    - lll
+    - errchkjson
+    - ireturn
+    - gomoddirectives
+  settings:
+    tagliatelle:
+      case:
+        use-field-name: true
+        extended-rules:
+          json:
+            case: camel
+            extra-initialisms: true
+            initialism-overrides:
+              ID: true
+              URL: true
+              IP: true
+              DNS: true
+              API: true
+              TCP: true
+              LB: true
+    dupl:
+      threshold: 100
+    goconst:
+      min-len: 2
+      min-occurrences: 2
+    gocritic:
+      disabled-checks:
+        - dupImport
+        - unnamedResult
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    funlen:
+      lines: 60
+      statements: 60
+    gocyclo:
+      min-complexity: 15
+    cyclop:
+      max-complexity: 15
+    mnd:
+      ignored-numbers:
+        - "2"
+        - "10"
+        - "60"
+        - "60.0"
+        - "64"
+        - "100"
+        - "500"
+        - "1000"
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+    varnamelen:
+      max-distance: 5
+      min-name-length: 3
+      check-receiver: false
+      check-return: false
+      ignore-type-assert-ok: false
+      ignore-map-index-ok: false
+      ignore-chan-recv-ok: false
+      ignore-decls:
+        - wg sync.WaitGroup
+        - wg *sync.WaitGroup
+        - mu sync.Mutex
+        - ok bool
+      ignore-names:
+        - i
+        - w
+        - r
+        - b
+        - c
+        - m
+        - n
+        - tt
+        - rw
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - generated\.go$
+    rules:
+      - linters:
+          - funlen
+          - dupl
+          - gocognit
+          - gocyclo
+          - cyclop
+          - errcheck
+          - testableexamples
+          - testpackage
+          - forcetypeassert
+          - gocritic
+          - nlreturn
+          - wsl_v5
+          - varnamelen
+          - unparam
+          - modernize
+          - gosec
+          - testifylint
+          - perfsprint
+          - paralleltest
+          - maintidx
+          - godox
+          - revive
+          - gochecknoglobals
+        path: _test\.go
+      - linters:
+          - godox
+          - gochecknoglobals
+          - gocognit
+          - funlen
+          - gocyclo
+          - cyclop
+          - maintidx
+          - noinlineerr
+          - mnd
+        path: cmd/
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - generated\.go$
