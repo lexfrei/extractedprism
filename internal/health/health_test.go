@@ -111,12 +111,14 @@ func TestShutdown(t *testing.T) {
 		errCh <- srv.Start()
 	}()
 
-	// Give the server time to start.
-	time.Sleep(50 * time.Millisecond)
+	// Poll until the server is listening.
+	var addr string
 
-	// Verify the server is listening by making a request.
-	addr := srv.Addr()
-	require.NotEmpty(t, addr)
+	require.Eventually(t, func() bool {
+		addr = srv.Addr()
+
+		return addr != ""
+	}, 2*time.Second, 10*time.Millisecond, "server did not start in time")
 
 	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer reqCancel()

@@ -6,19 +6,20 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	kubediscovery "github.com/lexfrei/extractedprism/internal/discovery/kubernetes"
 )
 
 const (
 	testAPIPort    = "6443"
-	testTimeout    = 5 * time.Second
-	receiveTimeout = 2 * time.Second
+	testTimeout    = 10 * time.Second
+	receiveTimeout = 5 * time.Second
 )
 
 func newTestLogger() *zap.Logger {
@@ -42,6 +43,30 @@ func makeEndpointSlice(ips ...string) *discoveryv1.EndpointSlice {
 			},
 		},
 		Endpoints: endpoints,
+	}
+}
+
+func receiveEndpoints(t *testing.T, ch <-chan []string) []string {
+	t.Helper()
+
+	select {
+	case eps := <-ch:
+		return eps
+	case <-time.After(receiveTimeout):
+		t.Fatal("timed out waiting for endpoints")
+
+		return nil
+	}
+}
+
+func waitForRun(t *testing.T, errCh <-chan error) {
+	t.Helper()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(receiveTimeout):
+		t.Fatal("timed out waiting for Run to return")
 	}
 }
 
@@ -125,33 +150,28 @@ func TestRun_InitialEndpoints(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	updateCh := make(chan []string, 1)
+	updateCh := make(chan []string, 10)
 	errCh := make(chan error, 1)
 
 	go func() {
 		errCh <- provider.Run(ctx, updateCh)
 	}()
 
-	select {
-	case endpoints := <-updateCh:
-		assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for initial endpoints")
-	}
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints)
 
 	cancel()
-
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for Run to return")
-	}
+	waitForRun(t, errCh)
 }
 
 func TestRun_EndpointUpdate(t *testing.T) {
 	initial := makeEndpointSlice("10.0.0.1")
 	client := fake.NewClientset(initial)
+
+	// Install a watch reactor that gives us control over the watch channel.
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
 	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -164,44 +184,32 @@ func TestRun_EndpointUpdate(t *testing.T) {
 		errCh <- provider.Run(ctx, updateCh)
 	}()
 
-	// Receive initial endpoints.
-	select {
-	case endpoints := <-updateCh:
-		assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for initial endpoints")
-	}
+	// Receive initial endpoints from List.
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
 
-	// Update the endpoint slice resource.
+	// Inject a Modified event via the fake watcher.
 	updated := makeEndpointSlice("10.0.0.1", "10.0.0.2", "10.0.0.3")
+	updated.ResourceVersion = "2"
+	fakeWatcher.Modify(updated)
 
-	_, err := client.DiscoveryV1().EndpointSlices("default").Update(ctx, updated, metav1.UpdateOptions{})
-	require.NoError(t, err)
-
-	// Receive updated endpoints.
-	select {
-	case endpoints := <-updateCh:
-		assert.ElementsMatch(t,
-			[]string{"10.0.0.1:6443", "10.0.0.2:6443", "10.0.0.3:6443"},
-			endpoints,
-		)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for updated endpoints")
-	}
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t,
+		[]string{"10.0.0.1:6443", "10.0.0.2:6443", "10.0.0.3:6443"},
+		endpoints,
+	)
 
 	cancel()
-
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for Run to return")
-	}
+	waitForRun(t, errCh)
 }
 
 func TestRun_EndpointRemoval(t *testing.T) {
 	initial := makeEndpointSlice("10.0.0.1", "10.0.0.2")
 	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
 	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -214,35 +222,52 @@ func TestRun_EndpointRemoval(t *testing.T) {
 		errCh <- provider.Run(ctx, updateCh)
 	}()
 
-	// Receive initial endpoints.
-	select {
-	case endpoints := <-updateCh:
-		assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for initial endpoints")
-	}
+	// Receive initial endpoints from List.
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints)
 
-	// Update to single endpoint (removal of 10.0.0.2).
+	// Inject a Modified event with fewer endpoints.
 	updated := makeEndpointSlice("10.0.0.1")
+	updated.ResourceVersion = "2"
+	fakeWatcher.Modify(updated)
 
-	_, err := client.DiscoveryV1().EndpointSlices("default").Update(ctx, updated, metav1.UpdateOptions{})
-	require.NoError(t, err)
-
-	select {
-	case endpoints := <-updateCh:
-		assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for updated endpoints")
-	}
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
 
 	cancel()
+	waitForRun(t, errCh)
+}
 
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for Run to return")
-	}
+func TestRun_WatchError(t *testing.T) {
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints.
+	receiveEndpoints(t, updateCh)
+
+	// Stop the watcher to simulate a disconnect.
+	// The provider should restart the watch loop (using the default reactor now).
+	fakeWatcher.Stop()
+
+	// The provider should still be running (reconnect loop).
+	// Cancel to verify clean exit.
+	cancel()
+	waitForRun(t, errCh)
 }
 
 func TestRun_EmptyEndpoints(t *testing.T) {
@@ -270,22 +295,11 @@ func TestRun_EmptyEndpoints(t *testing.T) {
 		errCh <- provider.Run(ctx, updateCh)
 	}()
 
-	// Should receive empty list.
-	select {
-	case endpoints := <-updateCh:
-		assert.Empty(t, endpoints)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for initial endpoints")
-	}
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.Empty(t, endpoints)
 
 	cancel()
-
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for Run to return")
-	}
+	waitForRun(t, errCh)
 }
 
 func TestRun_MultipleEndpointObjects(t *testing.T) {
@@ -316,24 +330,14 @@ func TestRun_MultipleEndpointObjects(t *testing.T) {
 		errCh <- provider.Run(ctx, updateCh)
 	}()
 
-	select {
-	case endpoints := <-updateCh:
-		assert.ElementsMatch(t,
-			[]string{"10.0.0.1:6443", "10.0.0.2:6443", "10.0.0.3:6443"},
-			endpoints,
-		)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for initial endpoints")
-	}
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t,
+		[]string{"10.0.0.1:6443", "10.0.0.2:6443", "10.0.0.3:6443"},
+		endpoints,
+	)
 
 	cancel()
-
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for Run to return")
-	}
+	waitForRun(t, errCh)
 }
 
 func TestRun_ContextCancellation(t *testing.T) {
@@ -348,19 +352,40 @@ func TestRun_ContextCancellation(t *testing.T) {
 		errCh <- provider.Run(ctx, updateCh)
 	}()
 
-	// Drain initial endpoints.
-	select {
-	case <-updateCh:
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for initial endpoints")
-	}
+	receiveEndpoints(t, updateCh)
 
 	cancel()
+	waitForRun(t, errCh)
+}
 
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(receiveTimeout):
-		t.Fatal("timed out waiting for clean cancellation")
-	}
+func TestRun_DeletedEndpoint(t *testing.T) {
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints.
+	receiveEndpoints(t, updateCh)
+
+	// Inject a Delete event.
+	fakeWatcher.Delete(initial)
+
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.Empty(t, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -23,7 +24,9 @@ type Server struct {
 	httpServer *http.Server
 	checker    Checker
 	logger     *zap.Logger
-	listener   net.Listener
+
+	mu       sync.Mutex
+	listener net.Listener
 }
 
 // NewServer creates a health Server bound to the given address and port.
@@ -56,16 +59,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Start() error {
 	lc := net.ListenConfig{}
 
-	var err error
-
-	s.listener, err = lc.Listen(context.Background(), "tcp", s.httpServer.Addr)
+	lis, err := lc.Listen(context.Background(), "tcp", s.httpServer.Addr)
 	if err != nil {
 		return errors.Wrap(err, "health server listen")
 	}
 
-	s.logger.Info("health server started", zap.String("addr", s.listener.Addr().String()))
+	s.mu.Lock()
+	s.listener = lis
+	s.mu.Unlock()
 
-	serveErr := s.httpServer.Serve(s.listener)
+	s.logger.Info("health server started", zap.String("addr", lis.Addr().String()))
+
+	serveErr := s.httpServer.Serve(lis)
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		return nil
 	}
@@ -88,11 +93,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Addr returns the listener address once Start has been called.
 // Returns an empty string if the server has not started.
 func (s *Server) Addr() string {
-	if s.listener == nil {
+	s.mu.Lock()
+	lis := s.listener
+	s.mu.Unlock()
+
+	if lis == nil {
 		return ""
 	}
 
-	return s.listener.Addr().String()
+	return lis.Addr().String()
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
