@@ -1,0 +1,245 @@
+name: PR Checks and Build
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Run Trivy vulnerability scanner (filesystem)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Upload Trivy filesystem results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: 'trivy-fs-results.sarif'
+          category: 'trivy-filesystem'
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --timeout=5m
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+
+  build-and-push:
+    name: Build and Push (${{ matrix.arch }})
+    needs: [security, lint, test]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push to ttl.sh by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Containerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=ttl.sh/extractedprism,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ matrix.arch }}
+          cache-to: type=gha,scope=build-${{ matrix.arch }},mode=max
+          build-args: |
+            VERSION=pr-${{ github.event.pull_request.number }}
+            REVISION=${{ github.event.pull_request.head.sha }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v6
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-manifests:
+    name: Merge Manifests
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v7
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          IMAGE_NAME="ttl.sh/extractedprism"
+          TAG="pr-${PR_NUMBER}-1d"
+
+          images=()
+          for digest_file in *; do
+            [[ -f "$digest_file" ]] || continue
+            images+=("${IMAGE_NAME}@sha256:${digest_file}")
+          done
+
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${TAG}" \
+            "${images[@]}"
+
+      - name: Inspect image
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          docker buildx imagetools inspect "ttl.sh/extractedprism:pr-${PR_NUMBER}-1d"
+
+      - name: Generate build summary
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          IMAGE_TAG="ttl.sh/extractedprism:pr-${PR_NUMBER}-1d"
+
+          {
+            echo "## Multi-arch Container Image"
+            echo ""
+            echo "### Image Tag"
+            echo "- \`${IMAGE_TAG}\`"
+            echo ""
+            echo "### Platforms"
+            echo "- linux/amd64"
+            echo "- linux/arm64"
+            echo ""
+            echo "### Pull Command"
+            echo '```bash'
+            echo "podman pull ${IMAGE_TAG}"
+            echo '```'
+            echo ""
+            echo "> **Note:** Image expires in 24 hours (ttl.sh)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: Notify PR
+    needs: merge-manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if first build
+        id: first_build
+        uses: actions/github-script@v8
+        with:
+          result-encoding: string
+          script: |
+            const labels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number
+            });
+
+            const hasLabel = labels.data.some(label => label.name === 'Container Available');
+            return hasLabel ? 'false' : 'true';
+
+      - name: Add Container Available label
+        if: steps.first_build.outputs.result == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ['Container Available']
+            })
+
+      - name: Comment on PR (first time only)
+        if: steps.first_build.outputs.result == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const imageTag = `ttl.sh/extractedprism:pr-${prNumber}-1d`;
+
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Container image available\n\n**Multi-arch image (amd64 + arm64):**\n\`\`\`bash\npodman pull ${imageTag}\n\`\`\`\n\n> **Note:** Image is rebuilt on every commit and expires after 24 hours (hosted on ttl.sh).`
+            })
