@@ -1,0 +1,165 @@
+// Package server orchestrates the load balancer, discovery, and health subsystems.
+package server
+
+import (
+	"context"
+	"time"
+
+	"github.com/cockroachdb/errors"
+	"github.com/siderolabs/go-loadbalancer/controlplane"
+	"github.com/siderolabs/go-loadbalancer/upstream"
+	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/lexfrei/extractedprism/internal/config"
+	"github.com/lexfrei/extractedprism/internal/discovery"
+	"github.com/lexfrei/extractedprism/internal/discovery/merged"
+	"github.com/lexfrei/extractedprism/internal/discovery/static"
+	"github.com/lexfrei/extractedprism/internal/health"
+)
+
+const (
+	keepAlivePeriod = 30 * time.Second
+	tcpUserTimeout  = 30 * time.Second
+	shutdownTimeout = 5 * time.Second
+)
+
+// Server ties together the load balancer, endpoint discovery, and health checking.
+type Server struct {
+	cfg        *config.Config
+	logger     *zap.Logger
+	lbHandle   *controlplane.LoadBalancer
+	healthSrv  *health.Server
+	upstreamCh chan []string
+}
+
+// New creates a Server from the given config.
+func New(cfg *config.Config, logger *zap.Logger) (*Server, error) {
+	err := cfg.Validate()
+	if err != nil {
+		return nil, errors.Wrap(err, "invalid config")
+	}
+
+	lbHandle, err := createLoadBalancer(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	srv := &Server{
+		cfg:        cfg,
+		logger:     logger,
+		lbHandle:   lbHandle,
+		upstreamCh: make(chan []string, 1),
+	}
+
+	srv.healthSrv = health.NewServer(cfg.BindAddress, cfg.HealthPort, srv, logger)
+
+	return srv, nil
+}
+
+func createLoadBalancer(
+	cfg *config.Config,
+	logger *zap.Logger,
+) (*controlplane.LoadBalancer, error) {
+	lbHandle, err := controlplane.NewLoadBalancer(
+		cfg.BindAddress, cfg.BindPort, logger,
+		controlplane.WithDialTimeout(cfg.HealthTimeout),
+		controlplane.WithKeepAlivePeriod(keepAlivePeriod),
+		controlplane.WithTCPUserTimeout(tcpUserTimeout),
+		controlplane.WithHealthCheckOptions(
+			upstream.WithHealthcheckInterval(cfg.HealthInterval),
+			upstream.WithHealthcheckTimeout(cfg.HealthTimeout),
+		),
+	)
+	if err != nil {
+		return nil, errors.Wrap(err, "create load balancer")
+	}
+
+	return lbHandle, nil
+}
+
+// Healthy delegates to the load balancer health status.
+func (srv *Server) Healthy() (bool, error) {
+	healthy, err := srv.lbHandle.Healthy()
+	if err != nil {
+		return false, errors.Wrap(err, "load balancer health check")
+	}
+
+	return healthy, nil
+}
+
+// Run starts all subsystems and blocks until ctx is cancelled.
+func (srv *Server) Run(ctx context.Context) error {
+	err := srv.lbHandle.Start(srv.upstreamCh)
+	if err != nil {
+		return errors.Wrap(err, "start load balancer")
+	}
+
+	grp, ctx := errgroup.WithContext(ctx)
+
+	grp.Go(func() error { return srv.runDiscovery(ctx) })
+	grp.Go(func() error { return srv.runHealth(ctx) })
+
+	waitErr := grp.Wait()
+	if waitErr != nil {
+		return errors.Wrap(waitErr, "server run")
+	}
+
+	return nil
+}
+
+func (srv *Server) runDiscovery(ctx context.Context) error {
+	providers, err := srv.buildProviders()
+	if err != nil {
+		return err
+	}
+
+	mp := merged.NewMergedProvider(srv.logger, providers...)
+
+	runErr := mp.Run(ctx, srv.upstreamCh)
+	if runErr != nil {
+		return errors.Wrap(runErr, "merged provider")
+	}
+
+	return nil
+}
+
+func (srv *Server) buildProviders() ([]discovery.EndpointProvider, error) {
+	sp, err := static.NewStaticProvider(srv.cfg.Endpoints)
+	if err != nil {
+		return nil, errors.Wrap(err, "create static provider")
+	}
+
+	return []discovery.EndpointProvider{sp}, nil
+}
+
+func (srv *Server) runHealth(ctx context.Context) error {
+	errCh := make(chan error, 1)
+
+	go func() { //nolint:contextcheck // health.Server.Start does not accept context
+		startErr := srv.healthSrv.Start()
+		if startErr != nil {
+			errCh <- errors.Wrap(startErr, "health server start")
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return srv.shutdownHealth(ctx)
+	case err := <-errCh:
+		return err
+	}
+}
+
+func (srv *Server) shutdownHealth(_ context.Context) error {
+	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	//nolint:contextcheck // parent ctx is done; fresh timeout needed for graceful shutdown
+	shutErr := srv.healthSrv.Shutdown(shutCtx)
+	if shutErr != nil {
+		return errors.Wrap(shutErr, "health server shutdown")
+	}
+
+	return nil
+}
