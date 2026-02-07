@@ -156,7 +156,7 @@ The TCP load balancer is created via `controlplane.NewLoadBalancer` from `sidero
 The merged discovery provider runs all configured sub-providers concurrently and combines their results:
 
 - **Static provider**: Sends the configured endpoints once at startup, then blocks until shutdown. Provides the baseline set of API server addresses that is always available.
-- **Kubernetes provider**: Lists EndpointSlice resources on startup, then establishes a Watch. On each Watch event (add, modify, delete), it extracts endpoint addresses and sends the updated list. On Watch errors, it automatically reconnects and continues from the last known resource version.
+- **Kubernetes provider**: Lists EndpointSlice resources on startup, then establishes a Watch. It maintains a local cache of all known EndpointSlice objects; on each Watch event (add, modify, delete), the cache is updated and the full endpoint list is recomputed from all cached slices. This ensures that updating one slice does not lose endpoints from other slices. On Watch errors, it automatically reconnects from the last known resource version. The Kubernetes client connects directly to one of the static endpoint IPs (bypassing the `kubernetes.default.svc` ClusterIP) to avoid a circular dependency with the CNI plugin. When running outside a cluster, the provider gracefully degrades and the server operates with static endpoints only.
 
 The merged provider deduplicates endpoints across all sub-providers and sends the combined list to the load balancer. If the merged list would be empty, the update is skipped to prevent routing to zero backends.
 
@@ -229,4 +229,4 @@ Requirements:
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) for the full text.
+BSD 3-Clause License. See [LICENSE](LICENSE) for the full text.
