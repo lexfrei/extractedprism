@@ -76,6 +76,30 @@ func TestStaticProvider_Run_SendsEndpoints(t *testing.T) {
 	}
 }
 
+func TestStaticProvider_Run_CancelledBeforeSend(t *testing.T) {
+	provider, err := static.NewStaticProvider([]string{"10.0.0.1:6443"})
+	require.NoError(t, err)
+
+	// Unbuffered channel with no reader — send would block forever without ctx guard.
+	updateCh := make(chan []string)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel before Run starts.
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Run blocked on cancelled context — goroutine leak")
+	}
+}
+
 func TestStaticProvider_Run_CancelsCleanly(t *testing.T) {
 	provider, err := static.NewStaticProvider([]string{"10.0.0.1:6443"})
 	require.NoError(t, err)
