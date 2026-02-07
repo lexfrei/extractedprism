@@ -144,7 +144,7 @@ func (p *Provider) processEvent(
 	case watch.Added, watch.Modified:
 		return p.handleSliceUpdate(ctx, event, updateCh, resVer)
 	case watch.Deleted:
-		return p.handleSliceDelete(ctx, event, updateCh)
+		return p.handleSliceDelete(ctx, event, updateCh, resVer)
 	case watch.Error:
 		return errors.New("watch error event received")
 	case watch.Bookmark:
@@ -185,13 +185,18 @@ func (p *Provider) handleSliceDelete(
 	ctx context.Context,
 	event watch.Event,
 	updateCh chan<- []string,
+	resVer *string,
 ) error {
 	slice, ok := event.Object.(*discoveryv1.EndpointSlice)
-	if ok {
-		delete(p.knownSlices, slice.Name)
+	if !ok {
+		return errors.New("unexpected object type in delete event")
 	}
 
-	p.logger.Warn("kubernetes endpoint slice deleted")
+	*resVer = slice.ResourceVersion
+
+	delete(p.knownSlices, slice.Name)
+
+	p.logger.Warn("kubernetes endpoint slice deleted", zap.String("name", slice.Name))
 
 	extracted := p.endpointsFromCache()
 
@@ -229,29 +234,6 @@ func (p *Provider) endpointsFromCache() []string {
 
 				result = append(result, hostPort)
 			}
-		}
-	}
-
-	sort.Strings(result)
-
-	return result
-}
-
-// ExtractEndpoints extracts deduplicated host:port strings from endpoint slice endpoints.
-func ExtractEndpoints(endpoints []discoveryv1.Endpoint, apiPort string) []string {
-	seen := make(map[string]struct{})
-	result := make([]string, 0, len(endpoints))
-
-	for _, ep := range endpoints {
-		for _, addr := range ep.Addresses {
-			endpoint := net.JoinHostPort(addr, apiPort)
-			if _, exists := seen[endpoint]; exists {
-				continue
-			}
-
-			seen[endpoint] = struct{}{}
-
-			result = append(result, endpoint)
 		}
 	}
 
