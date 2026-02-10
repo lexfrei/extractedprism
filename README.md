@@ -37,18 +37,18 @@ extractedprism takes a different approach: each node runs its own load balancer 
 
 ```text
                        +-------------------------------------------+
-                       |              Kubernetes Cluster            |
+                       |              Kubernetes Cluster           |
                        |                                           |
 +--------------------+ |   +--------------+   +--------------+     |
 |    Node (any)      | |   | CP Node 1    |   | CP Node 2    |     |
 |                    | |   | API :6443    |   | API :6443    |     |
 | kubelet / pods     | |   +--------------+   +--------------+     |
-|   |                | |          ^                   ^             |
-|   v                | |          |                   |             |
-| 127.0.0.1:7445 ----+-+----------+-------------------+             |
+|   |                | |          ^                   ^            |
+|   v                | |          |                   |            |
+| 127.0.0.1:7445 ----+-+----------+-------------------+            |
 | [extractedprism]   | |   health-checked TCP proxy                |
-|   |                | |          ^                   ^             |
-|   v                | |          |                   |             |
+|   |                | |          ^                   ^            |
+|   v                | |          |                   |            |
 | 127.0.0.1:7446     | |   +--------------+   +--------------+     |
 | [health server]    | |   | CP Node 3    |   | CP Node N    |     |
 |  /healthz /readyz  | |   | API :6443    |   | API :6443    |     |
