@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="extractedprism logo" width="256">
+</p>
+
 # extractedprism
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/lexfrei/extractedprism)](https://goreportcard.com/report/github.com/lexfrei/extractedprism)
