@@ -37,7 +37,7 @@ extractedprism takes a different approach: each node runs its own load balancer 
 
 ```text
                        +-------------------------------------------+
-                       |              Kubernetes Cluster            |
+                       |              Kubernetes Cluster           |
                        |                                           |
 +--------------------+ |   +--------------+   +--------------+     |
 |    Node (any)      | |   | CP Node 1    |   | CP Node 2    |     |
