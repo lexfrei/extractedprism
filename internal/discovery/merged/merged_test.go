@@ -71,13 +71,23 @@ func newErrorProvider(err error) *mockProvider {
 	}
 }
 
-// newSendThenErrorProvider sends endpoints once, then returns an error.
-func newSendThenErrorProvider(endpoints []string, err error) *mockProvider {
+// newSendThenErrorProvider sends endpoints, waits for trigger, then returns an error.
+// The trigger allows tests to control when the error happens, eliminating race conditions.
+func newSendThenErrorProvider(
+	endpoints []string,
+	err error,
+	trigger <-chan struct{},
+) *mockProvider {
 	return &mockProvider{
-		sendFunc: func(_ context.Context, ch chan<- []string) error {
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
 			ch <- endpoints
 
-			return err
+			select {
+			case <-trigger:
+				return err
+			case <-ctx.Done():
+				return nil
+			}
 		},
 	}
 }
@@ -343,10 +353,13 @@ func TestRun_SingleProviderFailureDoesNotKillOthers(t *testing.T) {
 func TestRun_FailedProviderEndpointsAreCleared(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
-	// Failing provider sends an endpoint then errors out.
+	errorTrigger := make(chan struct{})
+
+	// Failing provider sends an endpoint, waits for trigger, then errors out.
 	failing := newSendThenErrorProvider(
 		[]string{"10.0.0.99:6443"},
 		errors.New("kubernetes API unavailable"),
+		errorTrigger,
 	)
 	// Healthy provider stays alive.
 	healthy := newImmediateProvider([]string{"10.0.0.1:6443"})
@@ -361,16 +374,48 @@ func TestRun_FailedProviderEndpointsAreCleared(t *testing.T) {
 
 	go func() { errCh <- mp.Run(ctx, updateCh) }()
 
-	// Drain updates until the stale endpoint is cleared.
+	// Phase 1: Wait for the combined state (both providers' data visible).
 	deadline := time.After(3 * time.Second)
 
 	for {
 		select {
 		case got := <-updateCh:
-			// After the failing provider is cleaned up, we should see only
-			// the healthy provider's endpoints.
+			if len(got) == 2 {
+				goto combinedSeen
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for combined endpoints")
+		}
+	}
+
+combinedSeen:
+	// Phase 2: Trigger the error, then wait for the stale data to be cleared.
+	close(errorTrigger)
+
+	for {
+		select {
+		case got := <-updateCh:
 			if len(got) == 1 && got[0] == "10.0.0.1:6443" {
+				// Verify stale endpoints do not reappear.
+				time.Sleep(100 * time.Millisecond)
+
+				select {
+				case recheck := <-updateCh:
+					for _, ep := range recheck {
+						if ep == "10.0.0.99:6443" {
+							t.Fatal("stale endpoint reappeared after clearing")
+						}
+					}
+				default:
+				}
+
 				cancel()
+
+				select {
+				case <-errCh:
+				case <-time.After(time.Second):
+					t.Fatal("timed out waiting for Run to return after cancel")
+				}
 
 				return
 			}
@@ -426,4 +471,13 @@ func TestRun_ProviderError(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for error")
 	}
+}
+
+func TestRun_ZeroProvidersReturnsError(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	mp := merged.NewMergedProvider(log)
+
+	err := mp.Run(t.Context(), make(chan []string, 1))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no providers configured")
 }
