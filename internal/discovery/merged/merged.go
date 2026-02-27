@@ -44,25 +44,33 @@ func (mp *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
 
 	var (
 		wg       sync.WaitGroup
+		provWg   sync.WaitGroup
 		errMu    sync.Mutex
 		provErrs []error
 	)
 
 	for idx, prov := range mp.providers {
 		wg.Add(1)
+		provWg.Add(1)
 
-		go mp.runProvider(ctx, idx, prov, internalCh, &wg, &errMu, &provErrs, cancel)
+		go mp.runProvider(ctx, idx, prov, internalCh, &wg, &provWg, &errMu, &provErrs)
 	}
+
+	// Cancel context when all providers have completed (error or graceful),
+	// so mergeLoop exits and Run can return.
+	go func() {
+		provWg.Wait()
+		cancel()
+	}()
 
 	mp.mergeLoop(ctx, internalCh, updateCh)
 
-	cancel()
 	wg.Wait()
 
 	errMu.Lock()
 	defer errMu.Unlock()
 
-	if len(provErrs) == len(mp.providers) {
+	if len(provErrs) > 0 && len(provErrs) == len(mp.providers) {
 		return provErrs[0]
 	}
 
@@ -75,11 +83,12 @@ func (mp *Provider) runProvider(
 	prov discovery.EndpointProvider,
 	internalCh chan<- providerUpdate,
 	wg *sync.WaitGroup,
+	provWg *sync.WaitGroup,
 	errMu *sync.Mutex,
 	provErrs *[]error,
-	cancel context.CancelFunc,
 ) {
 	defer wg.Done()
+	defer provWg.Done()
 
 	provCh := make(chan []string, 1)
 
@@ -105,12 +114,7 @@ func (mp *Provider) runProvider(
 	errMu.Lock()
 
 	*provErrs = append(*provErrs, errors.Wrapf(runErr, "provider %d", idx))
-	allFailed := len(*provErrs) == len(mp.providers)
 	errMu.Unlock()
-
-	if allFailed {
-		cancel()
-	}
 }
 
 type providerUpdate struct {

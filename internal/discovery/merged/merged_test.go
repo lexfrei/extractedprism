@@ -71,6 +71,17 @@ func newErrorProvider(err error) *mockProvider {
 	}
 }
 
+// newGracefulExitProvider sends endpoints once and returns nil (graceful exit).
+func newGracefulExitProvider(endpoints []string) *mockProvider {
+	return &mockProvider{
+		sendFunc: func(_ context.Context, ch chan<- []string) error {
+			ch <- endpoints
+
+			return nil
+		},
+	}
+}
+
 // newSendThenErrorProvider sends endpoints, waits for trigger, then returns an error.
 // The trigger allows tests to control when the error happens, eliminating race conditions.
 func newSendThenErrorProvider(
@@ -436,6 +447,45 @@ func TestRun_ProviderError(t *testing.T) {
 		assert.True(t, errors.Is(err, provErr))
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for error")
+	}
+}
+
+func TestRun_GracefulExitPlusErrorDoesNotHang(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	graceful := newGracefulExitProvider([]string{"10.0.0.1:6443"})
+	failing := newErrorProvider(errors.New("provider failed"))
+
+	mp := merged.NewMergedProvider(log, graceful, failing)
+
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(context.Background(), make(chan []string, 10)) }()
+
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() hung: deadlock when graceful + error providers both exit")
+	}
+}
+
+func TestRun_AllGracefulExitReturnsNil(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	prov1 := newGracefulExitProvider([]string{"10.0.0.1:6443"})
+	prov2 := newGracefulExitProvider([]string{"10.0.0.2:6443"})
+
+	mp := merged.NewMergedProvider(log, prov1, prov2)
+
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(context.Background(), make(chan []string, 10)) }()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() hung: deadlock when all providers exit gracefully")
 	}
 }
 
