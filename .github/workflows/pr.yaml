@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Run Trivy vulnerability scanner (filesystem)
-        uses: aquasecurity/trivy-action@0.34.1
+        uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -32,7 +32,7 @@ jobs:
           severity: 'CRITICAL,HIGH,MEDIUM'
 
       - name: Upload Trivy filesystem results to GitHub Security
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: (success() || failure()) && github.event.pull_request.head.repo.full_name == github.repository
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'trivy-fs-results.sarif'
@@ -114,7 +114,7 @@ jobs:
           cache-to: type=gha,scope=build-${{ matrix.arch }},mode=max
           build-args: |
             VERSION=pr-${{ github.event.pull_request.number }}
-            REVISION=${{ github.event.pull_request.head.sha }}
+            REVISION=${{ github.sha }}
 
       - name: Export digest
         run: |
