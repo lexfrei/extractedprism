@@ -173,7 +173,7 @@ The health HTTP server exposes two endpoints on the configured health port:
 
 ### Graceful shutdown
 
-On `SIGINT` or `SIGTERM`, the server cancels its context, which stops endpoint discovery and initiates a 5-second graceful shutdown of the health HTTP server.
+On `SIGINT` or `SIGTERM`, the server cancels its context, which stops endpoint discovery, shuts down the TCP load balancer (closing the listener and waiting for active connections to drain), and initiates a 5-second graceful shutdown of the health HTTP server.
 
 ## Security
 

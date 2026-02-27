@@ -116,6 +116,13 @@ func (srv *Server) Run(ctx context.Context) error {
 		return errors.Wrap(err, "start load balancer")
 	}
 
+	defer func() {
+		shutErr := srv.lbHandle.Shutdown()
+		if shutErr != nil {
+			srv.logger.Warn("load balancer shutdown error", zap.Error(shutErr))
+		}
+	}()
+
 	grp, ctx := errgroup.WithContext(ctx)
 
 	grp.Go(func() error { return srv.runDiscovery(ctx) })
