@@ -290,6 +290,70 @@ func TestRun_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestRun_SingleProviderFailureDoesNotKillOthers(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	healthy := newImmediateProvider([]string{"10.0.0.1:6443"})
+	failing := newErrorProvider(errors.New("kubernetes API unavailable"))
+
+	mp := merged.NewMergedProvider(log, healthy, failing)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Healthy provider should still deliver endpoints.
+	got := receiveWithTimeout(t, updateCh, time.Second)
+	assert.Equal(t, []string{"10.0.0.1:6443"}, got)
+
+	// Give time for the error provider to fail and be logged.
+	time.Sleep(100 * time.Millisecond)
+
+	// Merged provider must still be running (not killed by the failing provider).
+	select {
+	case err := <-errCh:
+		t.Fatalf("Run returned unexpectedly: %v", err)
+	default:
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
+func TestRun_AllProvidersFailReturnsError(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	err1 := errors.New("provider 1 failed")
+	err2 := errors.New("provider 2 failed")
+
+	mp := merged.NewMergedProvider(log,
+		newErrorProvider(err1),
+		newErrorProvider(err2),
+	)
+
+	ctx := t.Context()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error")
+	}
+}
+
 func TestRun_ProviderError(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	provErr := errors.New("provider failed")

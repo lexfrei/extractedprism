@@ -30,15 +30,19 @@ func NewMergedProvider(
 }
 
 // Run launches all sub-providers and merges their endpoints.
+// Individual provider failures are logged but do not stop the remaining providers.
+// Run returns an error only if ALL providers fail.
 func (mp *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	internalCh := make(chan providerUpdate, len(mp.providers))
 
-	var wg sync.WaitGroup
-
-	errCh := make(chan error, len(mp.providers))
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		provErrs []error
+	)
 
 	for idx, prov := range mp.providers {
 		wg.Add(1)
@@ -50,10 +54,21 @@ func (mp *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
 
 			go mp.forwardUpdates(ctx, idx, provCh, internalCh)
 
-			err := prov.Run(ctx, provCh)
-			if err != nil {
-				errCh <- errors.Wrapf(err, "provider %d", idx)
+			runErr := prov.Run(ctx, provCh)
+			if runErr == nil || ctx.Err() != nil {
+				return
+			}
 
+			mp.logger.Warn("provider failed, continuing with remaining providers",
+				zap.Int("provider", idx), zap.Error(runErr))
+
+			mu.Lock()
+
+			provErrs = append(provErrs, errors.Wrapf(runErr, "provider %d", idx))
+			allFailed := len(provErrs) == len(mp.providers)
+			mu.Unlock()
+
+			if allFailed {
 				cancel()
 			}
 		}(idx, prov)
@@ -64,12 +79,14 @@ func (mp *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
 	cancel()
 	wg.Wait()
 
-	select {
-	case provErr := <-errCh:
-		return provErr
-	default:
-		return nil
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(provErrs) == len(mp.providers) {
+		return provErrs[0]
 	}
+
+	return nil
 }
 
 type providerUpdate struct {
