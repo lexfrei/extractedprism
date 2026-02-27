@@ -121,7 +121,7 @@ go build \
   ./cmd/extractedprism
 ```
 
-Requires Go 1.25 or later.
+Requires Go 1.26 or later.
 
 ## Configuration
 
@@ -228,7 +228,7 @@ Contributions are welcome. To get started:
 
 Requirements:
 
-- Go 1.25 or later
+- Go 1.26 or later
 - golangci-lint v2 (the project uses strict linting with nearly all linters enabled)
 
 ## License

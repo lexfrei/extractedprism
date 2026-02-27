@@ -422,6 +422,8 @@ func TestRun_AllProvidersFailReturnsError(t *testing.T) {
 	select {
 	case err := <-errCh:
 		require.Error(t, err)
+		assert.True(t, errors.Is(err, err1), "combined error must contain err1")
+		assert.True(t, errors.Is(err, err2), "combined error must contain err2")
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for error")
 	}

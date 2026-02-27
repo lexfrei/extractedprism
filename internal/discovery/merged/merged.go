@@ -71,7 +71,7 @@ func (mp *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
 	defer errMu.Unlock()
 
 	if len(provErrs) > 0 && len(provErrs) == len(mp.providers) {
-		return provErrs[0]
+		return errors.Join(provErrs...)
 	}
 
 	return nil
