@@ -121,7 +121,7 @@ go build \
   ./cmd/extractedprism
 ```
 
-Requires Go 1.25 or later.
+Requires Go 1.26 or later.
 
 ## Configuration
 
@@ -162,7 +162,7 @@ The merged discovery provider runs all configured sub-providers concurrently and
 - **Static provider**: Sends the configured endpoints once at startup, then blocks until shutdown. Provides the baseline set of API server addresses that is always available.
 - **Kubernetes provider**: Lists EndpointSlice resources on startup, then establishes a Watch. It maintains a local cache of all known EndpointSlice objects; on each Watch event (add, modify, delete), the cache is updated and the full endpoint list is recomputed from all cached slices. This ensures that updating one slice does not lose endpoints from other slices. On Watch errors, it reconnects with exponential backoff and jitter. On 410 Gone (etcd compaction), it performs a full re-list to rebuild the cache. The Kubernetes client connects directly to one of the static endpoint IPs (bypassing the `kubernetes.default.svc` ClusterIP) to avoid a circular dependency with the CNI plugin. When running outside a cluster, the provider gracefully degrades and the server operates with static endpoints only.
 
-The merged provider deduplicates endpoints across all sub-providers and sends the combined list to the load balancer. If the merged list would be empty, the update is skipped to prevent routing to zero backends.
+The merged provider deduplicates endpoints across all sub-providers and sends the combined list to the load balancer. If the merged list would be empty, the update is skipped to prevent routing to zero backends. Provider failures are isolated: if the Kubernetes provider fails, the static provider continues operating independently. The merged provider only returns an error if all sub-providers fail.
 
 ### Health server
 
@@ -228,7 +228,7 @@ Contributions are welcome. To get started:
 
 Requirements:
 
-- Go 1.25 or later
+- Go 1.26 or later
 - golangci-lint v2 (the project uses strict linting with nearly all linters enabled)
 
 ## License

@@ -71,6 +71,38 @@ func newErrorProvider(err error) *mockProvider {
 	}
 }
 
+// newGracefulExitProvider sends endpoints once and returns nil (graceful exit).
+func newGracefulExitProvider(endpoints []string) *mockProvider {
+	return &mockProvider{
+		sendFunc: func(_ context.Context, ch chan<- []string) error {
+			ch <- endpoints
+
+			return nil
+		},
+	}
+}
+
+// newSendThenErrorProvider sends endpoints, waits for trigger, then returns an error.
+// The trigger allows tests to control when the error happens, eliminating race conditions.
+func newSendThenErrorProvider(
+	endpoints []string,
+	err error,
+	trigger <-chan struct{},
+) *mockProvider {
+	return &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			ch <- endpoints
+
+			select {
+			case <-trigger:
+				return err
+			case <-ctx.Done():
+				return nil
+			}
+		},
+	}
+}
+
 // newEmptyThenNothingProvider sends an empty list and blocks.
 func newEmptyThenNothingProvider() *mockProvider {
 	return &mockProvider{
@@ -290,6 +322,113 @@ func TestRun_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestRun_SingleProviderFailureDoesNotKillOthers(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	healthy := newImmediateProvider([]string{"10.0.0.1:6443"})
+	failing := newErrorProvider(errors.New("kubernetes API unavailable"))
+
+	mp := merged.NewMergedProvider(log, healthy, failing)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Healthy provider should still deliver endpoints.
+	got := receiveWithTimeout(t, updateCh, time.Second)
+	assert.Equal(t, []string{"10.0.0.1:6443"}, got)
+
+	// Give time for the error provider to fail and be logged.
+	time.Sleep(100 * time.Millisecond)
+
+	// Merged provider must still be running (not killed by the failing provider).
+	select {
+	case err := <-errCh:
+		t.Fatalf("Run returned unexpectedly: %v", err)
+	default:
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
+func TestRun_FailedProviderEndpointsAreCleared(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	errorTrigger := make(chan struct{})
+
+	// Failing provider sends an endpoint, waits for trigger, then errors out.
+	failing := newSendThenErrorProvider(
+		[]string{"10.0.0.99:6443"},
+		errors.New("kubernetes API unavailable"),
+		errorTrigger,
+	)
+	// Healthy provider stays alive.
+	healthy := newImmediateProvider([]string{"10.0.0.1:6443"})
+
+	mp := merged.NewMergedProvider(log, healthy, failing)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Phase 1: Wait for the combined state (both providers' data visible).
+	waitForCombined(t, updateCh)
+
+	// Phase 2: Trigger the error, then wait for the stale data to be cleared.
+	close(errorTrigger)
+
+	waitForCleanup(t, updateCh)
+
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return after cancel")
+	}
+}
+
+func TestRun_AllProvidersFailReturnsError(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	err1 := errors.New("provider 1 failed")
+	err2 := errors.New("provider 2 failed")
+
+	mp := merged.NewMergedProvider(log,
+		newErrorProvider(err1),
+		newErrorProvider(err2),
+	)
+
+	ctx := t.Context()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, err1), "combined error must contain err1")
+		assert.True(t, errors.Is(err, err2), "combined error must contain err2")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error")
+	}
+}
+
 func TestRun_ProviderError(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	provErr := errors.New("provider failed")
@@ -310,5 +449,100 @@ func TestRun_ProviderError(t *testing.T) {
 		assert.True(t, errors.Is(err, provErr))
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for error")
+	}
+}
+
+func TestRun_GracefulExitPlusErrorDoesNotHang(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	graceful := newGracefulExitProvider([]string{"10.0.0.1:6443"})
+	failing := newErrorProvider(errors.New("provider failed"))
+
+	mp := merged.NewMergedProvider(log, graceful, failing)
+
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(context.Background(), make(chan []string, 10)) }()
+
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() hung: deadlock when graceful + error providers both exit")
+	}
+}
+
+func TestRun_AllGracefulExitReturnsNil(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	prov1 := newGracefulExitProvider([]string{"10.0.0.1:6443"})
+	prov2 := newGracefulExitProvider([]string{"10.0.0.2:6443"})
+
+	mp := merged.NewMergedProvider(log, prov1, prov2)
+
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(context.Background(), make(chan []string, 10)) }()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() hung: deadlock when all providers exit gracefully")
+	}
+}
+
+func TestRun_ZeroProvidersReturnsError(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	mp := merged.NewMergedProvider(log)
+
+	err := mp.Run(t.Context(), make(chan []string, 1))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no providers configured")
+}
+
+func waitForCombined(t *testing.T, updateCh <-chan []string) {
+	t.Helper()
+
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 2 {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for combined endpoints")
+		}
+	}
+}
+
+func waitForCleanup(t *testing.T, updateCh <-chan []string) {
+	t.Helper()
+
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 1 && got[0] == "10.0.0.1:6443" {
+				// Verify stale endpoints do not reappear.
+				time.Sleep(100 * time.Millisecond)
+
+				select {
+				case recheck := <-updateCh:
+					for _, ep := range recheck {
+						if ep == "10.0.0.99:6443" {
+							t.Fatal("stale endpoint reappeared after clearing")
+						}
+					}
+				default:
+				}
+
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for stale endpoints to be cleared")
+		}
 	}
 }

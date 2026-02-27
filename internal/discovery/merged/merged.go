@@ -30,46 +30,91 @@ func NewMergedProvider(
 }
 
 // Run launches all sub-providers and merges their endpoints.
+// Individual provider failures are logged but do not stop the remaining providers.
+// Run returns an error only if ALL providers fail.
 func (mp *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
+	if len(mp.providers) == 0 {
+		return errors.New("no providers configured")
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	internalCh := make(chan providerUpdate, len(mp.providers))
 
-	var wg sync.WaitGroup
-
-	errCh := make(chan error, len(mp.providers))
+	var (
+		wg       sync.WaitGroup
+		provWg   sync.WaitGroup
+		errMu    sync.Mutex
+		provErrs []error
+	)
 
 	for idx, prov := range mp.providers {
 		wg.Add(1)
+		provWg.Add(1)
 
-		go func(idx int, prov discovery.EndpointProvider) {
-			defer wg.Done()
-
-			provCh := make(chan []string, 1)
-
-			go mp.forwardUpdates(ctx, idx, provCh, internalCh)
-
-			err := prov.Run(ctx, provCh)
-			if err != nil {
-				errCh <- errors.Wrapf(err, "provider %d", idx)
-
-				cancel()
-			}
-		}(idx, prov)
+		go mp.runProvider(ctx, idx, prov, internalCh, &wg, &provWg, &errMu, &provErrs)
 	}
+
+	// Cancel context when all providers have completed (error or graceful),
+	// so mergeLoop exits and Run can return.
+	go func() {
+		provWg.Wait()
+		cancel()
+	}()
 
 	mp.mergeLoop(ctx, internalCh, updateCh)
 
-	cancel()
 	wg.Wait()
 
-	select {
-	case provErr := <-errCh:
-		return provErr
-	default:
-		return nil
+	errMu.Lock()
+	defer errMu.Unlock()
+
+	if len(provErrs) > 0 && len(provErrs) == len(mp.providers) {
+		return errors.Join(provErrs...)
 	}
+
+	return nil
+}
+
+func (mp *Provider) runProvider(
+	ctx context.Context,
+	idx int,
+	prov discovery.EndpointProvider,
+	internalCh chan<- providerUpdate,
+	wg *sync.WaitGroup,
+	provWg *sync.WaitGroup,
+	errMu *sync.Mutex,
+	provErrs *[]error,
+) {
+	defer wg.Done()
+	defer provWg.Done()
+
+	provCh := make(chan []string, 1)
+
+	wg.Go(func() {
+		mp.forwardUpdates(ctx, idx, provCh, internalCh)
+	})
+
+	runErr := prov.Run(ctx, provCh)
+
+	// Close provCh so forwardUpdates drains any remaining buffered data
+	// and then sends a nil-update to clear the provider's cache entry.
+	// The nil-update is sent by forwardUpdates (not here) to guarantee
+	// correct ordering: all real data is forwarded before the cleanup.
+	close(provCh)
+
+	if runErr == nil || ctx.Err() != nil {
+		return
+	}
+
+	mp.logger.Warn("provider failed, continuing with remaining providers",
+		zap.Int("provider", idx), zap.Error(runErr))
+
+	errMu.Lock()
+
+	*provErrs = append(*provErrs, errors.Wrapf(runErr, "provider %d", idx))
+	errMu.Unlock()
 }
 
 type providerUpdate struct {
@@ -89,6 +134,14 @@ func (mp *Provider) forwardUpdates(
 			return
 		case eps, ok := <-provCh:
 			if !ok {
+				// Provider channel closed: send nil-update to clear stale
+				// endpoints. This runs after all buffered data is drained,
+				// guaranteeing no stale data can arrive after the cleanup.
+				select {
+				case internalCh <- providerUpdate{index: idx, endpoints: nil}:
+				case <-ctx.Done():
+				}
+
 				return
 			}
 
