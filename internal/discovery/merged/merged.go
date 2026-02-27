@@ -62,6 +62,13 @@ func (mp *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
 			mp.logger.Warn("provider failed, continuing with remaining providers",
 				zap.Int("provider", idx), zap.Error(runErr))
 
+			// Clear stale endpoints from the failed provider so mergeLoop
+			// stops routing traffic to potentially dead backends.
+			select {
+			case internalCh <- providerUpdate{index: idx, endpoints: nil}:
+			case <-ctx.Done():
+			}
+
 			mu.Lock()
 
 			provErrs = append(provErrs, errors.Wrapf(runErr, "provider %d", idx))

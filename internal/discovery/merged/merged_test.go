@@ -71,6 +71,17 @@ func newErrorProvider(err error) *mockProvider {
 	}
 }
 
+// newSendThenErrorProvider sends endpoints once, then returns an error.
+func newSendThenErrorProvider(endpoints []string, err error) *mockProvider {
+	return &mockProvider{
+		sendFunc: func(_ context.Context, ch chan<- []string) error {
+			ch <- endpoints
+
+			return err
+		},
+	}
+}
+
 // newEmptyThenNothingProvider sends an empty list and blocks.
 func newEmptyThenNothingProvider() *mockProvider {
 	return &mockProvider{
@@ -326,6 +337,46 @@ func TestRun_SingleProviderFailureDoesNotKillOthers(t *testing.T) {
 		assert.NoError(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
+func TestRun_FailedProviderEndpointsAreCleared(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	// Failing provider sends an endpoint then errors out.
+	failing := newSendThenErrorProvider(
+		[]string{"10.0.0.99:6443"},
+		errors.New("kubernetes API unavailable"),
+	)
+	// Healthy provider stays alive.
+	healthy := newImmediateProvider([]string{"10.0.0.1:6443"})
+
+	mp := merged.NewMergedProvider(log, healthy, failing)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Drain updates until the stale endpoint is cleared.
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			// After the failing provider is cleaned up, we should see only
+			// the healthy provider's endpoints.
+			if len(got) == 1 && got[0] == "10.0.0.1:6443" {
+				cancel()
+
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for stale endpoints to be cleared")
+		}
 	}
 }
 
