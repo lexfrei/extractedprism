@@ -114,7 +114,7 @@ jobs:
           cache-to: type=gha,scope=build-${{ matrix.arch }},mode=max
           build-args: |
             VERSION=pr-${{ github.event.pull_request.number }}
-            REVISION=${{ github.sha }}
+            REVISION=${{ github.event.pull_request.head.sha }}
 
       - name: Export digest
         run: |
