@@ -20,7 +20,7 @@ jobs:
       security-events: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Run Trivy vulnerability scanner (filesystem)
         uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
@@ -33,7 +33,7 @@ jobs:
 
       - name: Upload Trivy filesystem results to GitHub Security
         if: (success() || failure()) && github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@bb471cdcf4dda2c934c5b656f554d43c1434ed13 # v4
         with:
           sarif_file: 'trivy-fs-results.sarif'
           category: 'trivy-filesystem'
@@ -43,16 +43,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
           version: latest
           args: --timeout=5m
@@ -62,10 +62,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -74,12 +74,14 @@ jobs:
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
           files: ./coverage.out
           flags: unittests
           name: codecov-umbrella
 
+  # Build, push, and notify jobs only run for same-repo PRs (fork guard).
+  # Fork PRs get lint, test, and security scan but not container builds.
   build-and-push:
     name: Build and Push (${{ matrix.arch }})
     if: github.event.pull_request.head.repo.full_name == github.repository
@@ -97,14 +99,16 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build and Push to ttl.sh by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Containerfile
@@ -123,7 +127,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: digests-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -137,14 +141,14 @@ jobs:
     needs: build-and-push
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8
         with:
           pattern: digests-*
           path: /tmp/digests
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -204,7 +208,7 @@ jobs:
     steps:
       - name: Check if first build
         id: first_build
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           result-encoding: string
           script: |
@@ -219,7 +223,7 @@ jobs:
 
       - name: Add Container Available label
         if: steps.first_build.outputs.result == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             github.rest.issues.addLabels({
@@ -231,7 +235,7 @@ jobs:
 
       - name: Comment on PR (first time only)
         if: steps.first_build.outputs.result == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
