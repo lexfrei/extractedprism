@@ -26,6 +26,8 @@ func newTestLogger() *zap.Logger {
 	return zap.NewNop()
 }
 
+func boolPtr(b bool) *bool { return &b }
+
 func makeNamedEndpointSlice(name string, ips ...string) *discoveryv1.EndpointSlice {
 	endpoints := make([]discoveryv1.Endpoint, 0, len(ips))
 	for _, addr := range ips {
@@ -517,6 +519,145 @@ func TestRun_MultiSliceDeletePreservesOtherSlices(t *testing.T) {
 
 	endpoints = receiveEndpoints(t, updateCh)
 	assert.ElementsMatch(t, []string{"10.0.0.2:6443"}, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestRun_FiltersNotReadyEndpoints(t *testing.T) {
+	eps := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kubernetes",
+			Namespace: "default",
+			Labels: map[string]string{
+				"kubernetes.io/service-name": "kubernetes",
+			},
+		},
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(true)},
+			},
+			{
+				Addresses:  []string{"10.0.0.2"},
+				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+			},
+			{
+				Addresses: []string{"10.0.0.3"},
+				// Ready is nil — should be treated as ready per K8s convention.
+			},
+		},
+	}
+
+	client := fake.NewClientset(eps)
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.3:6443"}, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestRun_AllEndpointsNotReady(t *testing.T) {
+	eps := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kubernetes",
+			Namespace: "default",
+			Labels: map[string]string{
+				"kubernetes.io/service-name": "kubernetes",
+			},
+		},
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+			},
+			{
+				Addresses:  []string{"10.0.0.2"},
+				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+			},
+		},
+	}
+
+	client := fake.NewClientset(eps)
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.Empty(t, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestRun_WatchUpdateFiltersNotReady(t *testing.T) {
+	initial := makeEndpointSlice("10.0.0.1", "10.0.0.2")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Initial endpoints (nil Ready = ready).
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints)
+
+	// Modify: mark 10.0.0.2 as not-ready.
+	updated := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "kubernetes",
+			Namespace:       "default",
+			ResourceVersion: "2",
+			Labels: map[string]string{
+				"kubernetes.io/service-name": "kubernetes",
+			},
+		},
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(true)},
+			},
+			{
+				Addresses:  []string{"10.0.0.2"},
+				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+			},
+		},
+	}
+	fakeWatcher.Modify(updated)
+
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
 
 	cancel()
 	waitForRun(t, errCh)

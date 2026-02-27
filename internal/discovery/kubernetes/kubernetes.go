@@ -297,8 +297,15 @@ func (p *Provider) endpointsFromCache() []string {
 	result := make([]string, 0)
 
 	for _, endpoints := range p.knownSlices {
-		for _, endpoint := range endpoints {
-			for _, addr := range endpoint.Addresses {
+		for idx := range endpoints {
+			if !isEndpointReady(&endpoints[idx]) {
+				p.logger.Debug("skipping not-ready endpoint",
+					zap.Strings("addresses", endpoints[idx].Addresses))
+
+				continue
+			}
+
+			for _, addr := range endpoints[idx].Addresses {
 				hostPort := net.JoinHostPort(addr, p.apiPort)
 				if _, exists := seen[hostPort]; exists {
 					continue
@@ -314,4 +321,14 @@ func (p *Provider) endpointsFromCache() []string {
 	sort.Strings(result)
 
 	return result
+}
+
+// isEndpointReady returns true if the endpoint is ready to serve traffic.
+// Per Kubernetes convention, nil Ready means the endpoint is ready.
+func isEndpointReady(ep *discoveryv1.Endpoint) bool {
+	if ep.Conditions.Ready == nil {
+		return true
+	}
+
+	return *ep.Conditions.Ready
 }
