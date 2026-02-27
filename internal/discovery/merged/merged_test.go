@@ -297,8 +297,7 @@ func TestRun_ProviderError(t *testing.T) {
 
 	mp := merged.NewMergedProvider(log, prov)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	updateCh := make(chan []string, 10)
 	errCh := make(chan error, 1)
