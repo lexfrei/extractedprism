@@ -16,13 +16,14 @@ permissions:
 jobs:
   security:
     name: Security Scan
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
       - name: Run Trivy vulnerability scanner (filesystem)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.34.1
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -80,6 +81,7 @@ jobs:
 
   build-and-push:
     name: Build and Push (${{ matrix.arch }})
+    if: always() && !failure() && !cancelled()
     needs: [security, lint, test]
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -191,6 +193,7 @@ jobs:
 
   notify:
     name: Notify PR
+    if: github.event.pull_request.head.repo.full_name == github.repository
     needs: merge-manifests
     runs-on: ubuntu-latest
     steps:
