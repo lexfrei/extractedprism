@@ -10,14 +10,15 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
-  security-events: write
 
 jobs:
   security:
     name: Security Scan
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -81,7 +82,7 @@ jobs:
 
   build-and-push:
     name: Build and Push (${{ matrix.arch }})
-    if: always() && !failure() && !cancelled()
+    if: github.event.pull_request.head.repo.full_name == github.repository
     needs: [security, lint, test]
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -196,6 +197,9 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     needs: merge-manifests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Check if first build
         id: first_build
