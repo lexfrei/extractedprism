@@ -375,53 +375,19 @@ func TestRun_FailedProviderEndpointsAreCleared(t *testing.T) {
 	go func() { errCh <- mp.Run(ctx, updateCh) }()
 
 	// Phase 1: Wait for the combined state (both providers' data visible).
-	deadline := time.After(3 * time.Second)
+	waitForCombined(t, updateCh)
 
-	for {
-		select {
-		case got := <-updateCh:
-			if len(got) == 2 {
-				goto combinedSeen
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for combined endpoints")
-		}
-	}
-
-combinedSeen:
 	// Phase 2: Trigger the error, then wait for the stale data to be cleared.
 	close(errorTrigger)
 
-	for {
-		select {
-		case got := <-updateCh:
-			if len(got) == 1 && got[0] == "10.0.0.1:6443" {
-				// Verify stale endpoints do not reappear.
-				time.Sleep(100 * time.Millisecond)
+	waitForCleanup(t, updateCh)
 
-				select {
-				case recheck := <-updateCh:
-					for _, ep := range recheck {
-						if ep == "10.0.0.99:6443" {
-							t.Fatal("stale endpoint reappeared after clearing")
-						}
-					}
-				default:
-				}
+	cancel()
 
-				cancel()
-
-				select {
-				case <-errCh:
-				case <-time.After(time.Second):
-					t.Fatal("timed out waiting for Run to return after cancel")
-				}
-
-				return
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for stale endpoints to be cleared")
-		}
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return after cancel")
 	}
 }
 
@@ -480,4 +446,51 @@ func TestRun_ZeroProvidersReturnsError(t *testing.T) {
 	err := mp.Run(t.Context(), make(chan []string, 1))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no providers configured")
+}
+
+func waitForCombined(t *testing.T, updateCh <-chan []string) {
+	t.Helper()
+
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 2 {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for combined endpoints")
+		}
+	}
+}
+
+func waitForCleanup(t *testing.T, updateCh <-chan []string) {
+	t.Helper()
+
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 1 && got[0] == "10.0.0.1:6443" {
+				// Verify stale endpoints do not reappear.
+				time.Sleep(100 * time.Millisecond)
+
+				select {
+				case recheck := <-updateCh:
+					for _, ep := range recheck {
+						if ep == "10.0.0.99:6443" {
+							t.Fatal("stale endpoint reappeared after clearing")
+						}
+					}
+				default:
+				}
+
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for stale endpoints to be cleared")
+		}
+	}
 }

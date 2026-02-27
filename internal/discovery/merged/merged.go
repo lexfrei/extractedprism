@@ -83,7 +83,9 @@ func (mp *Provider) runProvider(
 
 	provCh := make(chan []string, 1)
 
-	go mp.forwardUpdates(ctx, idx, provCh, internalCh)
+	wg.Go(func() {
+		mp.forwardUpdates(ctx, idx, provCh, internalCh)
+	})
 
 	runErr := prov.Run(ctx, provCh)
 
