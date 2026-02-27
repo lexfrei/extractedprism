@@ -63,7 +63,7 @@ extractedprism uses [`siderolabs/go-loadbalancer`](https://github.com/siderolabs
 ### Two-level endpoint discovery
 
 1. **Static (bootstrap)**: Control plane IPs provided via the `--endpoints` flag. Available immediately at startup. No cluster access or CNI required.
-2. **Dynamic (runtime)**: Watches Kubernetes EndpointSlice resources for the `kubernetes` service in the `default` namespace (label selector: `kubernetes.io/service-name=kubernetes`). Automatically detects control plane membership changes. Reconnects automatically on Watch errors, continuing from the last known resource version.
+2. **Dynamic (runtime)**: Watches Kubernetes EndpointSlice resources for the `kubernetes` service in the `default` namespace (label selector: `kubernetes.io/service-name=kubernetes`). Automatically detects control plane membership changes. Reconnects with exponential backoff (1s--30s with jitter) on Watch errors. On 410 Gone (etcd compaction), performs a full re-list to rebuild the endpoint cache.
 
 The merged provider deduplicates endpoints across all sub-providers and never sends an empty list to the load balancer, ensuring at least the static endpoints are always present.
 
@@ -160,7 +160,7 @@ The TCP load balancer is created via `controlplane.NewLoadBalancer` from `sidero
 The merged discovery provider runs all configured sub-providers concurrently and combines their results:
 
 - **Static provider**: Sends the configured endpoints once at startup, then blocks until shutdown. Provides the baseline set of API server addresses that is always available.
-- **Kubernetes provider**: Lists EndpointSlice resources on startup, then establishes a Watch. It maintains a local cache of all known EndpointSlice objects; on each Watch event (add, modify, delete), the cache is updated and the full endpoint list is recomputed from all cached slices. This ensures that updating one slice does not lose endpoints from other slices. On Watch errors, it automatically reconnects from the last known resource version. The Kubernetes client connects directly to one of the static endpoint IPs (bypassing the `kubernetes.default.svc` ClusterIP) to avoid a circular dependency with the CNI plugin. When running outside a cluster, the provider gracefully degrades and the server operates with static endpoints only.
+- **Kubernetes provider**: Lists EndpointSlice resources on startup, then establishes a Watch. It maintains a local cache of all known EndpointSlice objects; on each Watch event (add, modify, delete), the cache is updated and the full endpoint list is recomputed from all cached slices. This ensures that updating one slice does not lose endpoints from other slices. On Watch errors, it reconnects with exponential backoff and jitter. On 410 Gone (etcd compaction), it performs a full re-list to rebuild the cache. The Kubernetes client connects directly to one of the static endpoint IPs (bypassing the `kubernetes.default.svc` ClusterIP) to avoid a circular dependency with the CNI plugin. When running outside a cluster, the provider gracefully degrades and the server operates with static endpoints only.
 
 The merged provider deduplicates endpoints across all sub-providers and sends the combined list to the load balancer. If the merged list would be empty, the update is skipped to prevent routing to zero backends.
 

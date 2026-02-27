@@ -376,6 +376,118 @@ func TestRun_MultiSliceUpdatePreservesOtherSlices(t *testing.T) {
 	waitForRun(t, errCh)
 }
 
+func TestRun_410GoneTriggersRelist(t *testing.T) {
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints from List.
+	receiveEndpoints(t, updateCh)
+
+	// Inject a 410 Gone error event to simulate etcd compaction.
+	fakeWatcher.Error(&metav1.Status{
+		Status: metav1.StatusFailure,
+		Code:   410,
+		Reason: metav1.StatusReasonGone,
+	})
+
+	// After 410 Gone, the provider should re-list and send endpoints again.
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestRun_NonGoneWatchError(t *testing.T) {
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	receiveEndpoints(t, updateCh)
+
+	// Inject a non-410 error event (e.g. 500 Internal Server Error).
+	fakeWatcher.Error(&metav1.Status{
+		Status: metav1.StatusFailure,
+		Code:   500,
+		Reason: metav1.StatusReasonInternalError,
+	})
+
+	// Provider should survive the error and continue running.
+	// Cancel to verify clean exit.
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestBackoffDelay(t *testing.T) {
+	// Attempt 1 should produce delay in [1s, 1.25s] range (base + up to 25% jitter).
+	for range 10 {
+		d := kubediscovery.BackoffDelay(1)
+		assert.GreaterOrEqual(t, d, 1*time.Second)
+		assert.LessOrEqual(t, d, 1250*time.Millisecond)
+	}
+
+	// Attempt 5 should produce delay in [16s, 20s] range (1s * 2^4 + jitter).
+	for range 10 {
+		d := kubediscovery.BackoffDelay(5)
+		assert.GreaterOrEqual(t, d, 16*time.Second)
+		assert.LessOrEqual(t, d, 20*time.Second)
+	}
+
+	// High attempt should be capped at [30s, 37.5s].
+	for range 10 {
+		d := kubediscovery.BackoffDelay(100)
+		assert.GreaterOrEqual(t, d, 30*time.Second)
+		assert.LessOrEqual(t, d, 37500*time.Millisecond)
+	}
+
+	// Attempt 0 should be treated as attempt 1.
+	for range 10 {
+		d := kubediscovery.BackoffDelay(0)
+		assert.GreaterOrEqual(t, d, 1*time.Second)
+		assert.LessOrEqual(t, d, 1250*time.Millisecond)
+	}
+}
+
+func TestBackoffDelay_HasJitter(t *testing.T) {
+	// Verify that jitter produces varying results.
+	seen := make(map[time.Duration]bool)
+
+	for range 20 {
+		seen[kubediscovery.BackoffDelay(3)] = true
+	}
+
+	assert.Greater(t, len(seen), 1, "backoff should produce varying delays due to jitter")
+}
+
 func TestRun_MultiSliceDeletePreservesOtherSlices(t *testing.T) {
 	slice1 := makeNamedEndpointSlice("kubernetes-abc", "10.0.0.1")
 	slice2 := makeNamedEndpointSlice("kubernetes-def", "10.0.0.2")

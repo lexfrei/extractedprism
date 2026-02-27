@@ -3,8 +3,11 @@ package kubernetes
 
 import (
 	"context"
+	"math"
+	"math/rand/v2"
 	"net"
 	"sort"
+	"time"
 
 	"github.com/cockroachdb/errors"
 	"go.uber.org/zap"
@@ -19,6 +22,10 @@ import (
 const (
 	endpointSliceNamespace = "default"
 	kubernetesServiceLabel = "kubernetes.io/service-name=kubernetes"
+	backoffBase            = 1 * time.Second
+	backoffMax             = 30 * time.Second
+	backoffFactor          = 2.0
+	backoffJitterFrac      = 0.25
 )
 
 // Compile-time interface check.
@@ -80,15 +87,77 @@ func (p *Provider) watchLoop(
 	resourceVersion string,
 ) error {
 	resVer := resourceVersion
+	attempt := 0
 
 	for ctx.Err() == nil {
 		watchErr := p.watchOnce(ctx, updateCh, &resVer)
-		if watchErr != nil && ctx.Err() == nil {
-			p.logger.Warn("watch error, restarting", zap.Error(watchErr))
+		if watchErr == nil || ctx.Err() != nil {
+			attempt = 0
+
+			continue
+		}
+
+		attempt++
+		p.logger.Warn("watch error, restarting with backoff",
+			zap.Error(watchErr), zap.Int("attempt", attempt))
+
+		if errors.Is(watchErr, errGone) {
+			p.logger.Info("resource version expired, performing full re-list")
+
+			oldSlices := p.knownSlices
+			p.knownSlices = make(map[string][]discoveryv1.Endpoint)
+
+			endpoints, newVer, listErr := p.listEndpoints(ctx)
+			if listErr != nil {
+				p.logger.Warn("re-list failed, retaining cached endpoints", zap.Error(listErr))
+				p.knownSlices = oldSlices
+			} else {
+				resVer = newVer
+
+				select {
+				case updateCh <- endpoints:
+				case <-ctx.Done():
+					return nil
+				}
+
+				attempt = 0
+
+				continue
+			}
+		}
+
+		delay := BackoffDelay(attempt)
+		timer := time.NewTimer(delay)
+
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+
+			return nil
 		}
 	}
 
 	return nil
+}
+
+var errGone = errors.New("watch 410 Gone")
+
+// BackoffDelay calculates exponential backoff with jitter for the given attempt number.
+// Attempt must be >= 1. Jitter adds up to 25% random variation to prevent thundering herd.
+func BackoffDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+
+	delay := float64(backoffBase) * math.Pow(backoffFactor, float64(attempt-1))
+	if delay > float64(backoffMax) {
+		delay = float64(backoffMax)
+	}
+
+	jitter := delay * backoffJitterFrac * rand.Float64() //nolint:gosec // jitter does not need cryptographic randomness
+
+	return time.Duration(delay + jitter)
 }
 
 func (p *Provider) watchOnce(
@@ -146,6 +215,11 @@ func (p *Provider) processEvent(
 	case watch.Deleted:
 		return p.handleSliceDelete(ctx, event, updateCh, resVer)
 	case watch.Error:
+		status, ok := event.Object.(*metav1.Status)
+		if ok && status.Code == 410 {
+			return errGone
+		}
+
 		return errors.New("watch error event received")
 	case watch.Bookmark:
 		p.updateResourceVersion(event, resVer)
