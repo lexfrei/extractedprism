@@ -95,7 +95,8 @@ func run(_ *cobra.Command, _ []string) error {
 		return errors.Wrap(err, "create server")
 	}
 
-	ctx := signalContext()
+	ctx, stop := signalContext()
+	defer stop()
 
 	logger.Info("starting extractedprism",
 		zap.String("version", Version),
@@ -143,16 +144,21 @@ func buildLogger(level string) (*zap.Logger, error) {
 	return logger, nil
 }
 
-func signalContext() context.Context {
+func signalContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		<-sigCh
-		cancel()
+		select {
+		case <-sigCh:
+			cancel()
+		case <-ctx.Done():
+		}
+
+		signal.Stop(sigCh)
 	}()
 
-	return ctx
+	return ctx, cancel
 }
