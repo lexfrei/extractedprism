@@ -98,8 +98,12 @@ jobs:
             arch: arm64
             runner: ubuntu-24.04-arm
     steps:
+      # Checkout PR head (not merge commit) so REVISION matches built code.
+      # Safe: this job is protected by fork guard above.
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
