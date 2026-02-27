@@ -1,5 +1,5 @@
 # renovate: datasource=docker depName=golang
-FROM docker.io/library/golang:1.25-alpine AS builder
+FROM docker.io/library/golang:1.26-alpine AS builder
 
 ARG VERSION=development
 ARG REVISION=development
