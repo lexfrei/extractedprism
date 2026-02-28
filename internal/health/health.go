@@ -128,8 +128,9 @@ func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 
 	healthy, err := s.checker.Healthy()
 	if err != nil {
+		s.logger.Warn("readiness check failed", zap.Error(err))
 		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprintf(w, "not ready: %s\n", err.Error())
+		fmt.Fprint(w, "not ready\n")
 
 		return
 	}
