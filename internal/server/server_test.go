@@ -75,6 +75,67 @@ func TestNew_ValidConfig(t *testing.T) {
 	assert.NotNil(t, srv)
 }
 
+func TestAlive_FalseBeforeRun(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	srv, err := server.New(cfg, log)
+	require.NoError(t, err)
+	assert.False(t, srv.Alive(), "Alive must return false before Run is called")
+}
+
+func TestAlive_TrueDuringRun(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	srv, err := server.New(cfg, log)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	waitForHealthz(t, cfg.HealthPort)
+
+	assert.True(t, srv.Alive(), "Alive must return true while Run is active")
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for shutdown")
+	}
+}
+
+func TestAlive_FalseAfterRunReturns(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	srv, err := server.New(cfg, log)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	waitForHealthz(t, cfg.HealthPort)
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for shutdown")
+	}
+
+	assert.False(t, srv.Alive(), "Alive must return false after Run returns")
+}
+
 func TestNew_InvalidConfig(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	cfg := config.NewBaseConfig()

@@ -20,19 +20,24 @@ import (
 type mockChecker struct {
 	healthy bool
 	err     error
+	alive   bool
 }
 
 func (m *mockChecker) Healthy() (bool, error) {
 	return m.healthy, m.err
 }
 
+func (m *mockChecker) Alive() bool {
+	return m.alive
+}
+
 func newTestLogger() *zap.Logger {
 	return zap.NewNop()
 }
 
-func TestHealthz_Returns200(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+func TestHealthz_Alive_Returns200(t *testing.T) {
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -43,9 +48,34 @@ func TestHealthz_Returns200(t *testing.T) {
 	assert.Equal(t, "ok\n", rec.Body.String())
 }
 
+func TestHealthz_NotAlive_Returns503(t *testing.T) {
+	checker := &mockChecker{healthy: true, alive: false}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "not alive\n", rec.Body.String())
+}
+
+func TestHealthz_NotAlive_ContentType(t *testing.T) {
+	checker := &mockChecker{healthy: true, alive: false}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, expectedContentType, rec.Header().Get("Content-Type"))
+}
+
 func TestReadyz_HealthyReturns200(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
@@ -57,8 +87,8 @@ func TestReadyz_HealthyReturns200(t *testing.T) {
 }
 
 func TestReadyz_UnhealthyReturns503(t *testing.T) {
-	checker := &mockChecker{healthy: false}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: false, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
@@ -72,9 +102,10 @@ func TestReadyz_UnhealthyReturns503(t *testing.T) {
 func TestReadyz_ErrorReturns503WithGenericMessage(t *testing.T) {
 	checker := &mockChecker{
 		healthy: false,
+		alive:   true,
 		err:     errors.New("dial tcp 10.0.0.1:6443: connection refused"),
 	}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
@@ -94,8 +125,8 @@ func TestReadyz_ErrorLogsDetails(t *testing.T) {
 	logger := zap.New(core)
 
 	internalErr := errors.New("dial tcp 10.0.0.1:6443: connection refused")
-	checker := &mockChecker{healthy: false, err: internalErr}
-	srv := health.NewServer("127.0.0.1", 0, checker, logger)
+	checker := &mockChecker{healthy: false, alive: true, err: internalErr}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, logger)
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
@@ -116,8 +147,8 @@ func TestReadyz_ErrorLogsDetails(t *testing.T) {
 const expectedContentType = "text/plain; charset=utf-8"
 
 func TestHealthz_ContentType(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -132,14 +163,14 @@ func TestReadyz_ContentType(t *testing.T) {
 		name    string
 		checker *mockChecker
 	}{
-		{name: "healthy", checker: &mockChecker{healthy: true}},
-		{name: "unhealthy", checker: &mockChecker{healthy: false}},
-		{name: "error", checker: &mockChecker{healthy: false, err: errors.New("fail")}},
+		{name: "healthy", checker: &mockChecker{healthy: true, alive: true}},
+		{name: "unhealthy", checker: &mockChecker{healthy: false, alive: true}},
+		{name: "error", checker: &mockChecker{healthy: false, alive: true, err: errors.New("fail")}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := health.NewServer("127.0.0.1", 0, tt.checker, newTestLogger())
+			srv := health.NewServer("127.0.0.1", 0, tt.checker, tt.checker, newTestLogger())
 
 			req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 			rec := httptest.NewRecorder()
@@ -152,8 +183,8 @@ func TestReadyz_ContentType(t *testing.T) {
 }
 
 func TestMethodNotAllowed(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	paths := []string{"/healthz", "/readyz"}
 	methods := []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch}
@@ -175,8 +206,8 @@ func TestMethodNotAllowed(t *testing.T) {
 }
 
 func TestOptions_Returns204WithAllow(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	paths := []string{"/healthz", "/readyz"}
 
@@ -195,8 +226,8 @@ func TestOptions_Returns204WithAllow(t *testing.T) {
 }
 
 func TestHead_Returns200(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	// Use httptest.Server for real HTTP round-trip so net/http
 	// suppresses body for HEAD requests per RFC 9110.
@@ -227,8 +258,8 @@ func TestHead_Returns200(t *testing.T) {
 }
 
 func TestUnknownPathReturns404(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	paths := []string{"/", "/health", "/ready", "/metrics", "/foo"}
 	for _, path := range paths {
@@ -244,8 +275,8 @@ func TestUnknownPathReturns404(t *testing.T) {
 }
 
 func TestNewServer_SetsAllTimeouts(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	httpSrv := srv.HTTPServer()
 	assert.NotZero(t, httpSrv.ReadHeaderTimeout, "ReadHeaderTimeout must be set")
@@ -257,8 +288,8 @@ func TestNewServer_SetsAllTimeouts(t *testing.T) {
 }
 
 func TestShutdown(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
 	errCh := make(chan error, 1)
 
@@ -315,8 +346,8 @@ func TestStart_AcceptsContext(t *testing.T) {
 	// If Start ignores the context, DNS resolution would succeed
 	// and the error would be "bind: can't assign requested address"
 	// — a different error proving the context was not used.
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("localhost", 0, checker, newTestLogger())
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("localhost", 0, checker, checker, newTestLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -71,6 +72,7 @@ type Server struct {
 	healthSrv  healthServer
 	upstreamCh chan []string
 	kubeClient kubernetes.Interface
+	running    atomic.Bool
 }
 
 // New creates a Server from the given config.
@@ -99,7 +101,7 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 	}
 
 	if srv.healthSrv == nil {
-		srv.healthSrv = health.NewServer(cfg.BindAddress, cfg.HealthPort, srv, logger)
+		srv.healthSrv = health.NewServer(cfg.BindAddress, cfg.HealthPort, srv, srv, logger)
 	}
 
 	return srv, nil
@@ -126,6 +128,12 @@ func createLoadBalancer(
 	return lbHandle, nil
 }
 
+// Alive reports whether the server's Run loop is active.
+// Returns false before Run is called and after Run returns.
+func (srv *Server) Alive() bool {
+	return srv.running.Load()
+}
+
 // Healthy delegates to the load balancer health status.
 func (srv *Server) Healthy() (bool, error) {
 	healthy, err := srv.lbHandle.Healthy()
@@ -138,6 +146,9 @@ func (srv *Server) Healthy() (bool, error) {
 
 // Run starts all subsystems and blocks until ctx is cancelled.
 func (srv *Server) Run(ctx context.Context) error {
+	srv.running.Store(true)
+	defer srv.running.Store(false)
+
 	err := srv.lbHandle.Start(srv.upstreamCh)
 	if err != nil {
 		return errors.Wrap(err, "start load balancer")

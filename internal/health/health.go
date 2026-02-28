@@ -24,10 +24,18 @@ type Checker interface {
 	Healthy() (bool, error)
 }
 
+// LivenessChecker reports whether the system is alive.
+// Unlike Checker, liveness is a binary signal with no error — the system is
+// either running or it is not.
+type LivenessChecker interface {
+	Alive() bool
+}
+
 // Server serves HTTP health-check endpoints.
 type Server struct {
 	httpServer *http.Server
 	checker    Checker
+	liveness   LivenessChecker
 	logger     *zap.Logger
 
 	mu       sync.Mutex
@@ -35,10 +43,11 @@ type Server struct {
 }
 
 // NewServer creates a health Server bound to the given address and port.
-func NewServer(bindAddress string, port int, checker Checker, logger *zap.Logger) *Server {
+func NewServer(bindAddress string, port int, checker Checker, liveness LivenessChecker, logger *zap.Logger) *Server {
 	srv := &Server{
-		checker: checker,
-		logger:  logger,
+		checker:  checker,
+		liveness: liveness,
+		logger:   logger,
 	}
 
 	mux := http.NewServeMux()
@@ -138,6 +147,14 @@ func allowReadOnly(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	if !s.liveness.Alive() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "not alive\n")
+
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "ok\n")
 }
