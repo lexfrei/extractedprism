@@ -18,6 +18,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o extractedprism \
     ./cmd/extractedprism
 
+# scratch is a built-in empty pseudo-image with no OCI manifest or digest to pin.
 FROM scratch
 
 COPY --from=builder /tmp/passwd /etc/passwd
