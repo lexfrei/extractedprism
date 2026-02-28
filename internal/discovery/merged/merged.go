@@ -12,6 +12,11 @@ import (
 	"github.com/lexfrei/extractedprism/internal/discovery"
 )
 
+// ProviderChBuffer is the buffer size for each sub-provider's internal channel.
+// A larger buffer allows providers to queue multiple endpoint updates without
+// blocking when the merge loop is busy processing a previous update.
+const ProviderChBuffer = 16
+
 // Provider merges endpoints from multiple discovery providers.
 type Provider struct {
 	logger    *zap.Logger
@@ -90,7 +95,7 @@ func (mp *Provider) runProvider(
 	defer wg.Done()
 	defer provWg.Done()
 
-	provCh := make(chan []string, 1)
+	provCh := make(chan []string, ProviderChBuffer)
 
 	wg.Go(func() {
 		mp.forwardUpdates(ctx, idx, provCh, internalCh)

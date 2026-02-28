@@ -231,6 +231,11 @@ func TestRunHealth_StartErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestUpstreamChBuffer(t *testing.T) {
+	assert.GreaterOrEqual(t, server.UpstreamChBuffer, 16,
+		"upstream channel buffer must be large enough to absorb endpoint update bursts")
+}
+
 func TestExtractAPIPort(t *testing.T) {
 	tests := []struct {
 		name      string

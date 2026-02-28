@@ -2,6 +2,7 @@ package merged_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -498,6 +499,67 @@ func TestRun_ZeroProvidersReturnsError(t *testing.T) {
 	err := mp.Run(t.Context(), make(chan []string, 1))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no providers configured")
+}
+
+func TestProviderChBuffer(t *testing.T) {
+	assert.GreaterOrEqual(t, merged.ProviderChBuffer, 16,
+		"provider channel buffer must be large enough to absorb endpoint update bursts")
+}
+
+func TestRun_BurstUpdatesAreNotLost(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	const burstSize = 10
+	triggers := make([]chan struct{}, burstSize)
+	for i := range triggers {
+		triggers[i] = make(chan struct{})
+	}
+
+	// Provider sends burstSize rapid sequential updates.
+	burstProv := &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			for i := range burstSize {
+				ep := []string{fmt.Sprintf("10.0.0.%d:6443", i+1)}
+				select {
+				case ch <- ep:
+				case <-ctx.Done():
+					return nil
+				}
+			}
+
+			<-ctx.Done()
+
+			return nil
+		},
+	}
+
+	mp := merged.NewMergedProvider(log, burstProv)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, burstSize+1)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Drain all updates until we see the final value.
+	deadline := time.After(3 * time.Second)
+	var lastReceived []string
+
+	for {
+		select {
+		case got := <-updateCh:
+			lastReceived = got
+			if len(got) == 1 && got[0] == fmt.Sprintf("10.0.0.%d:6443", burstSize) {
+				cancel()
+
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for final burst update; last received: %v", lastReceived)
+		}
+	}
 }
 
 func waitForCombined(t *testing.T, updateCh <-chan []string) {
