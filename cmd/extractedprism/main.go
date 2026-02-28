@@ -83,6 +83,10 @@ func mustBindPFlag(key string, flag *pflag.Flag) {
 func run(_ *cobra.Command, _ []string) error {
 	cfg := buildConfig()
 
+	if err := cfg.Validate(); err != nil {
+		return errors.Wrap(err, "invalid configuration")
+	}
+
 	logger, err := buildLogger(cfg.LogLevel)
 	if err != nil {
 		return errors.Wrap(err, "create logger")
