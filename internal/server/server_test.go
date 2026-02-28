@@ -546,6 +546,12 @@ func TestWithLivenessProbe_Nil_Panics(t *testing.T) {
 	}, "nil probe function must panic")
 }
 
+func TestWithDiscoveryProviders_Empty_Panics(t *testing.T) {
+	assert.Panics(t, func() {
+		server.WithDiscoveryProviders()
+	}, "empty providers must panic")
+}
+
 func TestAlive_FalseWhenDiscoveryExits(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	cfg := validConfig()
@@ -580,7 +586,7 @@ func TestAlive_FalseWhenDiscoveryExits(t *testing.T) {
 	}
 }
 
-func TestAlive_FalseWhenDiscoveryErrors(t *testing.T) {
+func TestRun_DiscoveryErrorPropagates(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	cfg := validConfig()
 
@@ -600,8 +606,8 @@ func TestAlive_FalseWhenDiscoveryErrors(t *testing.T) {
 	go func() { errCh <- srv.Run(ctx) }()
 
 	// The error provider returns an error right away. The merged provider
-	// propagates it, errgroup cancels context, and discoveryDone is set.
-	// Run should return with an error containing "discovery failed".
+	// propagates it via errgroup, causing Run to return with the error.
+	// After Run returns, lastHeartbeat is reset to 0, so Alive() is false.
 	select {
 	case runErr := <-errCh:
 		require.Error(t, runErr)
@@ -611,7 +617,7 @@ func TestAlive_FalseWhenDiscoveryErrors(t *testing.T) {
 	}
 
 	assert.False(t, srv.Alive(),
-		"Alive must be false after discovery exits with error")
+		"Alive must be false after Run returns due to discovery error")
 }
 
 func TestRun_DiscoveryFallbackWithoutCluster(t *testing.T) {

@@ -102,7 +102,12 @@ func WithLivenessConfig(interval, threshold time.Duration) Option {
 
 // WithDiscoveryProviders overrides the discovery providers used by the server.
 // Intended for testing the discovery pipeline exit path.
+// Panics if no providers are given.
 func WithDiscoveryProviders(providers ...discovery.EndpointProvider) Option {
+	if len(providers) == 0 {
+		panic("WithDiscoveryProviders: at least one provider is required")
+	}
+
 	return func(srv *Server) {
 		srv.testProviders = providers
 	}

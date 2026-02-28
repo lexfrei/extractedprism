@@ -494,3 +494,11 @@ func TestNewServer_NilLiveness_Panics(t *testing.T) {
 		health.NewServer("127.0.0.1", 0, checker, nil, newTestLogger())
 	}, "NewServer must panic when liveness is nil")
 }
+
+func TestNewServer_NilLogger_Panics(t *testing.T) {
+	checker := &mockChecker{healthy: true, alive: true}
+
+	assert.Panics(t, func() {
+		health.NewServer("127.0.0.1", 0, checker, checker, nil)
+	}, "NewServer must panic when logger is nil")
+}

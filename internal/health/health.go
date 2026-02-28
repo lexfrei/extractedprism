@@ -49,7 +49,7 @@ type Server struct {
 }
 
 // NewServer creates a health Server bound to the given address and port.
-// Panics if checker or liveness is nil.
+// Panics if checker, liveness, or logger is nil.
 func NewServer(bindAddress string, port int, checker Checker, liveness LivenessChecker, logger *zap.Logger) *Server {
 	if checker == nil {
 		panic("health.NewServer: checker must not be nil")
@@ -57,6 +57,10 @@ func NewServer(bindAddress string, port int, checker Checker, liveness LivenessC
 
 	if liveness == nil {
 		panic("health.NewServer: liveness must not be nil")
+	}
+
+	if logger == nil {
+		panic("health.NewServer: logger must not be nil")
 	}
 
 	srv := &Server{
