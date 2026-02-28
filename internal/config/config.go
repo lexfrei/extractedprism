@@ -29,6 +29,7 @@ var (
 	ErrInvalidPort         = errors.New("invalid port number")
 	ErrPortConflict        = errors.New("bind port and health port must differ")
 	ErrInvalidHealthTiming = errors.New("health timeout must be less than health interval")
+	ErrInvalidBindAddress  = errors.New("invalid bind address")
 )
 
 // Config holds all configuration for the extractedprism proxy.
@@ -62,7 +63,12 @@ func (cfg *Config) Validate() error {
 		return ErrNoEndpoints
 	}
 
-	err := validateEndpoints(cfg.Endpoints)
+	err := validateBindAddress(cfg.BindAddress)
+	if err != nil {
+		return err
+	}
+
+	err = validateEndpoints(cfg.Endpoints)
 	if err != nil {
 		return err
 	}
@@ -77,6 +83,69 @@ func (cfg *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// validateBindAddress checks that addr is a valid IP address or a syntactically
+// valid hostname per RFC 1123. DNS resolution is intentionally not performed
+// here because it would introduce a startup dependency on DNS infrastructure,
+// which may not be available in early boot (e.g., before CNI starts).
+func validateBindAddress(addr string) error {
+	if addr == "" {
+		return errors.Wrap(ErrInvalidBindAddress, "must not be empty")
+	}
+
+	if net.ParseIP(addr) != nil {
+		return nil
+	}
+
+	if !isValidHostname(addr) {
+		return errors.Wrapf(ErrInvalidBindAddress, "%s: must be a valid IP address or hostname", addr)
+	}
+
+	return nil
+}
+
+const maxHostnameLength = 253
+
+func isValidHostname(host string) bool {
+	// Trim a single trailing dot (FQDN notation per RFC 1035).
+	host = strings.TrimSuffix(host, ".")
+
+	if host == "" || len(host) > maxHostnameLength {
+		return false
+	}
+
+	for label := range strings.SplitSeq(host, ".") {
+		if !isValidHostnameLabel(label) {
+			return false
+		}
+	}
+
+	return true
+}
+
+const maxLabelLength = 63
+
+func isValidHostnameLabel(label string) bool {
+	if label == "" || len(label) > maxLabelLength {
+		return false
+	}
+
+	if label[0] == '-' || label[len(label)-1] == '-' {
+		return false
+	}
+
+	for _, c := range label {
+		if !isHostnameChar(c) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isHostnameChar(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-'
 }
 
 func validateEndpoints(endpoints []string) error {
