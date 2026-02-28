@@ -112,6 +112,10 @@ func (p *Provider) watchLoop(
 
 				continue
 			}
+
+			if ctx.Err() != nil {
+				return nil //nolint:nilerr // context cancellation is graceful exit, watchErr is irrelevant
+			}
 		}
 
 		delay := BackoffDelay(attempt)
