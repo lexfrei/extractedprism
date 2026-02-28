@@ -45,8 +45,11 @@ func NewStaticProvider(endpoints []string) (*Provider, error) {
 
 // Run sends the static endpoints on updateCh and blocks until ctx is cancelled.
 func (stp *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
+	eps := make([]string, len(stp.endpoints))
+	copy(eps, stp.endpoints)
+
 	select {
-	case updateCh <- stp.endpoints:
+	case updateCh <- eps:
 	case <-ctx.Done():
 		return nil
 	}
