@@ -47,8 +47,10 @@ type Config struct {
 	LogLevel        string
 }
 
-// NewDefault returns a Config populated with default values.
-func NewDefault() *Config {
+// NewBaseConfig returns a Config populated with sensible defaults for optional
+// fields. Required fields such as Endpoints must be set by the caller before
+// the config passes Validate.
+func NewBaseConfig() *Config {
 	return &Config{
 		BindAddress:     defaultBindAddress,
 		BindPort:        defaultBindPort,
