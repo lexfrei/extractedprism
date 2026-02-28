@@ -170,8 +170,10 @@ The merged provider deduplicates endpoints across all sub-providers and sends th
 
 The health HTTP server exposes two endpoints on the configured health port:
 
-- **`/healthz`** (liveness): Always returns HTTP 200. The proxy process is alive.
+- **`/healthz`** (liveness): Returns HTTP 200. The proxy process is alive.
 - **`/readyz`** (readiness): Queries the load balancer's `Healthy()` method. Returns HTTP 200 if at least one upstream is reachable, HTTP 503 otherwise.
+
+Both endpoints accept only GET and HEAD methods. Other methods receive HTTP 405 Method Not Allowed.
 
 ### Graceful shutdown
 

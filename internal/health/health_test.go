@@ -166,6 +166,7 @@ func TestHealthz_RejectsNonGetMethods(t *testing.T) {
 			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 			assert.Contains(t, rec.Header().Get("Allow"), http.MethodGet)
 			assert.Contains(t, rec.Header().Get("Allow"), http.MethodHead)
+			assert.Equal(t, "method not allowed\n", rec.Body.String())
 		})
 	}
 }
@@ -185,6 +186,7 @@ func TestReadyz_RejectsNonGetMethods(t *testing.T) {
 			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 			assert.Contains(t, rec.Header().Get("Allow"), http.MethodGet)
 			assert.Contains(t, rec.Header().Get("Allow"), http.MethodHead)
+			assert.Equal(t, "method not allowed\n", rec.Body.String())
 		})
 	}
 }
@@ -199,9 +201,10 @@ func TestHealthz_HeadMethod(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, expectedContentType, rec.Header().Get("Content-Type"))
 }
 
-func TestReadyz_HeadMethod(t *testing.T) {
+func TestReadyz_HeadMethodHealthy(t *testing.T) {
 	checker := &mockChecker{healthy: true}
 	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
 
@@ -211,6 +214,19 @@ func TestReadyz_HeadMethod(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, expectedContentType, rec.Header().Get("Content-Type"))
+}
+
+func TestReadyz_HeadMethodUnhealthy(t *testing.T) {
+	checker := &mockChecker{healthy: false}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodHead, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
 func TestUnknownPathReturns404(t *testing.T) {
