@@ -65,6 +65,28 @@ func TestValidate_InvalidEndpoint(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidEndpoint_ErrorFormat(t *testing.T) {
+	cfg := config.NewDefault()
+	cfg.Endpoints = []string{"10.0.0.1"}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
+	assert.Contains(t, err.Error(), `endpoint "10.0.0.1"`,
+		"error message must use quoted endpoint format")
+}
+
+func TestValidate_InvalidEndpointPort_ErrorFormat(t *testing.T) {
+	cfg := config.NewDefault()
+	cfg.Endpoints = []string{"10.0.0.1:abc"}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
+	assert.Contains(t, err.Error(), `endpoint "10.0.0.1:abc"`,
+		"error message must use quoted endpoint format")
+}
+
 func TestValidate_InvalidEndpointPort(t *testing.T) {
 	tests := []struct {
 		name     string

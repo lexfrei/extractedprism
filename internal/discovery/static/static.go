@@ -33,7 +33,7 @@ func NewStaticProvider(endpoints []string) (*Provider, error) {
 	for _, endpoint := range endpoints {
 		host, port, err := net.SplitHostPort(endpoint)
 		if err != nil || host == "" || port == "" {
-			return nil, errors.Wrap(ErrInvalidEndpoint, endpoint)
+			return nil, errors.Wrapf(ErrInvalidEndpoint, "endpoint %q", endpoint)
 		}
 	}
 
