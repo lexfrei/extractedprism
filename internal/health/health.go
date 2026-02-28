@@ -42,8 +42,8 @@ func NewServer(bindAddress string, port int, checker Checker, logger *zap.Logger
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", srv.handleHealthz)
-	mux.HandleFunc("/readyz", srv.handleReadyz)
+	mux.HandleFunc("/healthz", allowReadOnly(srv.handleHealthz))
+	mux.HandleFunc("/readyz", allowReadOnly(srv.handleReadyz))
 
 	srv.httpServer = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", bindAddress, port),
@@ -69,10 +69,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Start begins listening and serving. It blocks until the server is shut down.
 // Returns nil on graceful shutdown.
-func (s *Server) Start() error {
+func (s *Server) Start(ctx context.Context) error {
 	lc := net.ListenConfig{}
 
-	lis, err := lc.Listen(context.Background(), "tcp", s.httpServer.Addr)
+	lis, err := lc.Listen(ctx, "tcp", s.httpServer.Addr)
 	if err != nil {
 		return errors.Wrap(err, "health server listen")
 	}
@@ -115,6 +115,25 @@ func (s *Server) Addr() string {
 	}
 
 	return lis.Addr().String()
+}
+
+const allowedMethods = "GET, HEAD"
+
+// allowReadOnly wraps a handler to reject methods other than GET, HEAD,
+// and OPTIONS. OPTIONS returns 204 with an Allow header per RFC 9110.
+func allowReadOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodGet, http.MethodHead:
+			next(w, req)
+		case http.MethodOptions:
+			w.Header().Set("Allow", allowedMethods)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.Header().Set("Allow", allowedMethods)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
