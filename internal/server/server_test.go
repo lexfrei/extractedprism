@@ -179,6 +179,38 @@ func TestAlive_HeartbeatStopsOnBlockedProbe(t *testing.T) {
 	}
 }
 
+func TestAlive_GracefulShutdownWithBlockedProbe(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	// The probe blocks forever and is never unblocked. Verifies that
+	// context cancellation alone is sufficient for Run to return, even
+	// when the probe goroutine is stuck (graceful shutdown).
+	srv, err := server.New(cfg, log,
+		server.WithLivenessConfig(50*time.Millisecond, 200*time.Millisecond),
+		server.WithLivenessProbe(func() {
+			select {} // blocks forever
+		}),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	waitForHealthz(t, cfg.HealthPort)
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(waitTimeout):
+		t.Fatal("Run did not return after cancel — goroutine leak in heartbeat probe")
+	}
+}
+
 func TestNew_InvalidConfig(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	cfg := config.NewBaseConfig()

@@ -260,9 +260,32 @@ func (srv *Server) runHeartbeat(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			srv.probeFn()
+			if !srv.probeWithContext(ctx) {
+				return nil
+			}
+
 			srv.lastHeartbeat.Store(time.Now().UnixNano())
 		}
+	}
+}
+
+// probeWithContext runs the probe function in a separate goroutine so that
+// context cancellation is respected even when the probe is blocked (e.g.,
+// deadlocked LB). Returns true if the probe completed, false if the
+// context was cancelled first.
+func (srv *Server) probeWithContext(ctx context.Context) bool {
+	probeDone := make(chan struct{})
+
+	go func() {
+		srv.probeFn()
+		close(probeDone)
+	}()
+
+	select {
+	case <-probeDone:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
