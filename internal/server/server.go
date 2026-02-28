@@ -238,7 +238,11 @@ func (srv *Server) Healthy() (bool, error) {
 func (srv *Server) Run(ctx context.Context) error {
 	defer srv.lastHeartbeat.Store(0)
 
-	// Reset discoveryDone so Run can be called again after a previous Run returns.
+	// Reset discoveryDone for correctness. Note: the underlying load balancer
+	// does not support re-Start after Shutdown, so Run cannot be called twice
+	// on the same Server instance in production. This reset ensures Alive()
+	// does not return a stale value from a prior call during tests or if the
+	// constraint is lifted in a future library version.
 	srv.discoveryDone.Store(false)
 
 	// Mark alive before launching goroutines so the health server

@@ -29,8 +29,21 @@ func (immediateProvider) Run(_ context.Context, _ chan<- []string) error {
 	return nil
 }
 
-// Compile-time check.
-var _ discovery.EndpointProvider = immediateProvider{}
+// errorProvider returns an error from Run immediately, simulating a
+// discovery failure. Used to test the discoveryDone path in Alive().
+type errorProvider struct {
+	err error
+}
+
+func (e errorProvider) Run(_ context.Context, _ chan<- []string) error {
+	return e.err
+}
+
+// Compile-time checks.
+var (
+	_ discovery.EndpointProvider = immediateProvider{}
+	_ discovery.EndpointProvider = errorProvider{}
+)
 
 const (
 	waitTimeout = 5 * time.Second
@@ -61,7 +74,10 @@ func validConfig() *config.Config {
 	return cfg
 }
 
-// waitForHealthz polls the health endpoint until it responds or the timeout fires.
+// waitForHealthz polls the health endpoint until it responds with 200 or the
+// timeout fires. Since /healthz now checks Alive(), this implicitly verifies
+// that Run() has stored the initial heartbeat. This is safe because Run()
+// stores lastHeartbeat before launching the errgroup (including the health server).
 func waitForHealthz(t *testing.T, healthPort int) {
 	t.Helper()
 
@@ -465,6 +481,18 @@ func TestWithLivenessConfig_NegativeThreshold_Panics(t *testing.T) {
 	}, "negative threshold must panic")
 }
 
+func TestWithLivenessConfig_NegativeInterval_Panics(t *testing.T) {
+	assert.Panics(t, func() {
+		server.WithLivenessConfig(-1*time.Second, time.Second)
+	}, "negative interval must panic")
+}
+
+func TestWithLivenessConfig_ZeroThreshold_Panics(t *testing.T) {
+	assert.Panics(t, func() {
+		server.WithLivenessConfig(time.Second, 0)
+	}, "zero threshold must panic")
+}
+
 func TestWithLivenessConfig_ValidValues_Applied(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	cfg := validConfig()
@@ -483,11 +511,11 @@ func TestWithLivenessConfig_ValidValues_Applied(t *testing.T) {
 
 	waitForHealthz(t, cfg.HealthPort)
 
-	// After several intervals, Alive must still be true because the
-	// heartbeat keeps refreshing within the threshold window.
-	time.Sleep(200 * time.Millisecond)
-
-	assert.True(t, srv.Alive(),
+	// Alive must remain true across multiple heartbeat intervals because
+	// the heartbeat keeps refreshing within the threshold window.
+	require.Never(t, func() bool {
+		return !srv.Alive()
+	}, 200*time.Millisecond, 25*time.Millisecond,
 		"server must stay alive when heartbeat interval < threshold")
 
 	cancel()
@@ -571,6 +599,40 @@ func TestAlive_FalseWhenDiscoveryExits(t *testing.T) {
 	case <-time.After(waitTimeout):
 		t.Fatal("timed out waiting for shutdown")
 	}
+}
+
+func TestAlive_FalseWhenDiscoveryErrors(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	srv, err := server.New(cfg, log,
+		server.WithLivenessConfig(50*time.Millisecond, 5*time.Second),
+		server.WithDiscoveryProviders(errorProvider{
+			err: errors.New("discovery failed"),
+		}),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	// The error provider returns an error right away. The merged provider
+	// propagates it, errgroup cancels context, and discoveryDone is set.
+	// Run should return with an error containing "discovery failed".
+	select {
+	case runErr := <-errCh:
+		require.Error(t, runErr)
+		assert.Contains(t, runErr.Error(), "discovery failed")
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for Run to return after discovery error")
+	}
+
+	assert.False(t, srv.Alive(),
+		"Alive must be false after discovery exits with error")
 }
 
 func TestRun_DiscoveryFallbackWithoutCluster(t *testing.T) {
