@@ -13,7 +13,7 @@ Two-level endpoint discovery: static endpoints for CNI-independent bootstrap, pl
 extractedprism starts BEFORE cluster networking (CNI) is available. This single fact drives most architectural decisions:
 
 - **Static endpoints are mandatory** — Kubernetes API discovery requires a working API client, which requires networking, which requires CNI, which requires the API server. Static endpoints break this circular dependency.
-- **Kube client bypasses ClusterIP** — `buildInClusterClient()` overrides `restCfg.Host` to point directly at a control plane node, not at the `kubernetes.default` service. ClusterIP routing depends on CNI, which isn't ready yet.
+- **Kube client routes through local LB** — `buildInClusterClient()` overrides `restCfg.Host` to point at the local load balancer (`127.0.0.1:bindPort`), not at the `kubernetes.default` ClusterIP. The LB is seeded with static endpoints before discovery starts, so it has reachable backends from the first API call. TLS ServerName is set to `kubernetes.default.svc` for certificate verification through the L4 proxy.
 - **Bind to localhost** — the load balancer listens on `127.0.0.1:7445` so kubelet and CNI plugins can reach the API server without any network dependency beyond loopback.
 - **Static-first, dynamic-second** — the merged provider always includes static endpoints. Kubernetes discovery is additive and optional. If it fails, the system still works.
 
