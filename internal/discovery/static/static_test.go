@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lexfrei/extractedprism/internal/config"
 	"github.com/lexfrei/extractedprism/internal/discovery/static"
 )
 
@@ -33,6 +34,9 @@ func TestStaticProvider_New_InvalidEndpoint(t *testing.T) {
 		{name: "missing port", endpoint: "10.0.0.1"},
 		{name: "empty string", endpoint: ""},
 		{name: "no host", endpoint: ":6443"},
+		{name: "port zero", endpoint: "10.0.0.1:0"},
+		{name: "port above max", endpoint: "10.0.0.1:65536"},
+		{name: "invalid hostname", endpoint: "-invalid:6443"},
 	}
 
 	for _, tt := range tests {
@@ -40,7 +44,7 @@ func TestStaticProvider_New_InvalidEndpoint(t *testing.T) {
 			provider, err := static.NewStaticProvider([]string{tt.endpoint})
 			require.Error(t, err)
 			assert.Nil(t, provider)
-			assert.True(t, errors.Is(err, static.ErrInvalidEndpoint))
+			assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
 		})
 	}
 }
@@ -48,7 +52,7 @@ func TestStaticProvider_New_InvalidEndpoint(t *testing.T) {
 func TestStaticProvider_New_InvalidEndpoint_ErrorFormat(t *testing.T) {
 	_, err := static.NewStaticProvider([]string{"10.0.0.1"})
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, static.ErrInvalidEndpoint))
+	assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
 	assert.Contains(t, err.Error(), `endpoint "10.0.0.1"`,
 		"error message must use quoted endpoint format")
 }
