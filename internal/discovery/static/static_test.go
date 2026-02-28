@@ -23,7 +23,7 @@ func TestStaticProvider_New_Empty(t *testing.T) {
 	provider, err := static.NewStaticProvider([]string{})
 	require.Error(t, err)
 	assert.Nil(t, provider)
-	assert.True(t, errors.Is(err, static.ErrNoEndpoints))
+	assert.True(t, errors.Is(err, config.ErrNoEndpoints))
 }
 
 func TestStaticProvider_New_InvalidEndpoint(t *testing.T) {
@@ -55,6 +55,8 @@ func TestStaticProvider_New_InvalidEndpoint_ErrorFormat(t *testing.T) {
 	assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
 	assert.Contains(t, err.Error(), `endpoint "10.0.0.1"`,
 		"error message must use quoted endpoint format")
+	assert.Contains(t, err.Error(), "static provider",
+		"error must include wrap context from static provider")
 }
 
 func TestStaticProvider_Run_SendsEndpoints(t *testing.T) {

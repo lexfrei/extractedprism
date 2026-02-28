@@ -13,9 +13,6 @@ import (
 // Compile-time interface check.
 var _ discovery.EndpointProvider = (*Provider)(nil)
 
-// ErrNoEndpoints is returned when no endpoints are provided to the static provider.
-var ErrNoEndpoints = errors.New("no endpoints provided")
-
 // Provider serves a fixed list of endpoints.
 type Provider struct {
 	endpoints []string
@@ -24,7 +21,7 @@ type Provider struct {
 // NewStaticProvider creates a provider from a fixed endpoint list.
 func NewStaticProvider(endpoints []string) (*Provider, error) {
 	if len(endpoints) == 0 {
-		return nil, ErrNoEndpoints
+		return nil, config.ErrNoEndpoints
 	}
 
 	for _, endpoint := range endpoints {
