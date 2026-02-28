@@ -1001,6 +1001,8 @@ func TestRun_WatchErrorIncludesStatusDetails(t *testing.T) {
 
 			assert.Contains(t, errStr, "500",
 				"error should include HTTP status code")
+			assert.Contains(t, errStr, "InternalError",
+				"error should include status reason")
 			assert.Contains(t, errStr, "etcd cluster is unavailable",
 				"error should include status message")
 
