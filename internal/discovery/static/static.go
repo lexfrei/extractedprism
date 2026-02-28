@@ -3,21 +3,15 @@ package static
 
 import (
 	"context"
-	"net"
 
 	"github.com/cockroachdb/errors"
 
+	"github.com/lexfrei/extractedprism/internal/config"
 	"github.com/lexfrei/extractedprism/internal/discovery"
 )
 
 // Compile-time interface check.
 var _ discovery.EndpointProvider = (*Provider)(nil)
-
-// Sentinel errors for static provider validation.
-var (
-	ErrNoEndpoints     = errors.New("no endpoints provided")
-	ErrInvalidEndpoint = errors.New("invalid endpoint")
-)
 
 // Provider serves a fixed list of endpoints.
 type Provider struct {
@@ -27,13 +21,13 @@ type Provider struct {
 // NewStaticProvider creates a provider from a fixed endpoint list.
 func NewStaticProvider(endpoints []string) (*Provider, error) {
 	if len(endpoints) == 0 {
-		return nil, ErrNoEndpoints
+		return nil, config.ErrNoEndpoints
 	}
 
 	for _, endpoint := range endpoints {
-		host, port, err := net.SplitHostPort(endpoint)
-		if err != nil || host == "" || port == "" {
-			return nil, errors.Wrapf(ErrInvalidEndpoint, "endpoint %q", endpoint)
+		err := config.ValidateEndpoint(endpoint)
+		if err != nil {
+			return nil, errors.Wrap(err, "static provider")
 		}
 	}
 

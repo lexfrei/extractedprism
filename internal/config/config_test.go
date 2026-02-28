@@ -445,6 +445,54 @@ func TestValidate_ValidEndpointHost(t *testing.T) {
 	}
 }
 
+func TestValidateEndpoint_Valid(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "IPv4 standard port", endpoint: "10.0.0.1:6443"},
+		{name: "IPv6 address", endpoint: "[::1]:6443"},
+		{name: "hostname with port", endpoint: "my-host.example.com:8443"},
+		{name: "minimum valid port", endpoint: "10.0.0.1:1"},
+		{name: "maximum valid port", endpoint: "10.0.0.1:65535"},
+		{name: "localhost", endpoint: "localhost:6443"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := config.ValidateEndpoint(tt.endpoint)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidateEndpoint_Invalid(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "missing port", endpoint: "10.0.0.1"},
+		{name: "empty string", endpoint: ""},
+		{name: "port only", endpoint: ":6443"},
+		{name: "no colon", endpoint: "localhost"},
+		{name: "port zero", endpoint: "10.0.0.1:0"},
+		{name: "port above max", endpoint: "10.0.0.1:65536"},
+		{name: "negative port", endpoint: "10.0.0.1:-1"},
+		{name: "non-numeric port", endpoint: "10.0.0.1:abc"},
+		{name: "leading hyphen host", endpoint: "-invalid:6443"},
+		{name: "trailing hyphen host", endpoint: "invalid-:6443"},
+		{name: "underscore host", endpoint: "_srv:6443"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := config.ValidateEndpoint(tt.endpoint)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
+		})
+	}
+}
+
 func TestParseEndpoints(t *testing.T) {
 	tests := []struct {
 		name     string

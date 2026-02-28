@@ -173,19 +173,30 @@ func isHostnameChar(c rune) bool {
 
 func validateEndpoints(endpoints []string) error {
 	for _, endpoint := range endpoints {
-		host, port, err := net.SplitHostPort(endpoint)
-		if err != nil || host == "" || port == "" {
-			return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q", endpoint)
+		err := ValidateEndpoint(endpoint)
+		if err != nil {
+			return err
 		}
+	}
 
-		if !isValidHost(host) {
-			return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q: invalid host", endpoint)
-		}
+	return nil
+}
 
-		portNum, parseErr := strconv.Atoi(port)
-		if parseErr != nil || portNum < minPort || portNum > maxPort {
-			return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q: port must be a number between 1 and 65535", endpoint)
-		}
+// ValidateEndpoint checks that a single endpoint string is a valid host:port
+// pair with a valid IP or hostname and a port in range 1-65535.
+func ValidateEndpoint(endpoint string) error {
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil || host == "" || port == "" {
+		return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q", endpoint)
+	}
+
+	if !isValidHost(host) {
+		return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q: invalid host", endpoint)
+	}
+
+	portNum, parseErr := strconv.Atoi(port)
+	if parseErr != nil || portNum < minPort || portNum > maxPort {
+		return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q: port must be a number between 1 and 65535", endpoint)
 	}
 
 	return nil
