@@ -33,10 +33,11 @@ var _ discovery.EndpointProvider = (*Provider)(nil)
 
 // Provider watches EndpointSlice resources for the kubernetes service.
 type Provider struct {
-	client      kubernetes.Interface
-	logger      *zap.Logger
-	apiPort     string
-	knownSlices map[string][]discoveryv1.Endpoint
+	client       kubernetes.Interface
+	logger       *zap.Logger
+	apiPort      string
+	knownSlices  map[string][]discoveryv1.Endpoint
+	hadEndpoints bool
 }
 
 // NewProvider creates a Kubernetes discovery provider.
@@ -55,6 +56,8 @@ func (p *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
 	if err != nil {
 		return errors.Wrap(err, "initial endpoint slice list")
 	}
+
+	p.hadEndpoints = len(endpoints) > 0
 
 	select {
 	case updateCh <- endpoints:
@@ -75,7 +78,7 @@ func (p *Provider) listEndpoints(ctx context.Context) ([]string, string, error) 
 
 	for idx := range sliceList.Items {
 		slice := &sliceList.Items[idx]
-		p.knownSlices[slice.Name] = slice.Endpoints
+		p.knownSlices[slice.Name] = copyEndpoints(slice.Endpoints)
 	}
 
 	return p.endpointsFromCache(), sliceList.ResourceVersion, nil
@@ -154,6 +157,8 @@ func (p *Provider) handleGoneRelist(
 	}
 
 	*resVer = newVer
+
+	p.warnIfTransitionedToEmpty(endpoints)
 
 	select {
 	case updateCh <- endpoints:
@@ -237,9 +242,18 @@ func (p *Provider) processEvent(
 	case watch.Deleted:
 		return p.handleSliceDelete(ctx, event, updateCh, resVer)
 	case watch.Error:
+		if event.Object == nil {
+			return errors.New("watch error event received")
+		}
+
 		status, ok := event.Object.(*metav1.Status)
 		if ok && status.Code == 410 {
 			return errGone
+		}
+
+		if ok {
+			return errors.Errorf("watch error: status %d %s: %s",
+				status.Code, status.Reason, status.Message)
 		}
 
 		return errors.New("watch error event received")
@@ -262,9 +276,10 @@ func (p *Provider) handleSliceUpdate(
 	}
 
 	*resVer = slice.ResourceVersion
-	p.knownSlices[slice.Name] = slice.Endpoints
+	p.knownSlices[slice.Name] = copyEndpoints(slice.Endpoints)
 
 	extracted := p.endpointsFromCache()
+	p.warnIfTransitionedToEmpty(extracted)
 
 	select {
 	case updateCh <- extracted:
@@ -295,6 +310,7 @@ func (p *Provider) handleSliceDelete(
 	p.logger.Warn("kubernetes endpoint slice deleted", zap.String("name", slice.Name))
 
 	extracted := p.endpointsFromCache()
+	p.warnIfTransitionedToEmpty(extracted)
 
 	select {
 	case updateCh <- extracted:
@@ -343,6 +359,32 @@ func (p *Provider) endpointsFromCache() []string {
 	sort.Strings(result)
 
 	return result
+}
+
+// warnIfTransitionedToEmpty logs a warning when the endpoint list transitions
+// from non-empty to empty (but not on repeated empty states).
+func (p *Provider) warnIfTransitionedToEmpty(endpoints []string) {
+	if len(endpoints) == 0 && p.hadEndpoints {
+		p.logger.Warn("all endpoints removed, endpoint list is now empty")
+	}
+
+	p.hadEndpoints = len(endpoints) > 0
+}
+
+// copyEndpoints returns a deep copy of the endpoint slice to prevent
+// external mutation from corrupting the internal cache.
+func copyEndpoints(src []discoveryv1.Endpoint) []discoveryv1.Endpoint {
+	if src == nil {
+		return nil
+	}
+
+	dst := make([]discoveryv1.Endpoint, len(src))
+
+	for i := range src {
+		dst[i] = *src[i].DeepCopy()
+	}
+
+	return dst
 }
 
 // isEndpointReady returns true if the endpoint is ready to serve traffic.
