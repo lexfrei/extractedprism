@@ -207,12 +207,48 @@ func TestValidate_BindAddressSyntacticOnly(t *testing.T) {
 	// Validation checks syntactic correctness only, not DNS resolution.
 	// Non-resolvable but syntactically valid hostnames pass validation.
 	// This is intentional: DNS may be unavailable during early boot.
-	cfg := config.NewDefault()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
-	cfg.BindAddress = "this-host-does-not-exist.invalid"
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "non-resolvable hostname", address: "this-host-does-not-exist.invalid"},
+		{name: "ticket example input", address: "not-an-ip"},
+	}
 
-	err := cfg.Validate()
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.BindAddress = tt.address
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidate_InvalidBindAddressErrorMessages(t *testing.T) {
+	tests := []struct {
+		name            string
+		address         string
+		expectedMessage string
+	}{
+		{name: "empty address", address: "", expectedMessage: "must not be empty"},
+		{name: "invalid chars", address: "host/path", expectedMessage: "must be a valid IP address or hostname"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.BindAddress = tt.address
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidBindAddress))
+			assert.Contains(t, err.Error(), tt.expectedMessage)
+		})
+	}
 }
 
 func TestValidate_PortConflict(t *testing.T) {
