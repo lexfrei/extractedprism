@@ -1001,6 +1001,62 @@ func TestRun_WatchErrorWithNonStatusObject(t *testing.T) {
 	}
 }
 
+func TestRun_WatchErrorWithNilObject(t *testing.T) {
+	// When a watch error event has a nil Object, the provider must not panic
+	// and should use the generic error message.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	provider := kubediscovery.NewProvider(client, logger, testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	receiveEndpoints(t, updateCh)
+
+	// Inject an error event with nil Object.
+	fakeWatcher.Error(nil)
+
+	require.Eventually(t, func() bool {
+		for _, entry := range logs.All() {
+			if entry.Message == logWatchErrorRestarting {
+				return true
+			}
+		}
+
+		return false
+	}, receiveTimeout, 10*time.Millisecond, "expected backoff log entry")
+
+	cancel()
+	waitForRun(t, errCh)
+
+	// Verify the generic error was logged (not a panic or crash).
+	for _, entry := range logs.All() {
+		if entry.Message == logWatchErrorRestarting {
+			errField := entry.ContextMap()["error"]
+			errStr, ok := errField.(string)
+			require.True(t, ok, "error field should be a string")
+			assert.Contains(t, errStr, "watch error event received",
+				"generic error should be used when Object is nil")
+
+			break
+		}
+	}
+}
+
 // --- Tests: warn when endpoint list transitions to empty ---
 
 func TestRun_LastSliceDeletionLogsWarning(t *testing.T) {
@@ -1123,6 +1179,143 @@ func TestRun_UpdateToAllNotReadyLogsWarning(t *testing.T) {
 
 	assert.True(t, found,
 		"expected warning log when all endpoints become not-ready via update")
+}
+
+func TestRun_RepeatedEmptyUpdatesLogWarningOnce(t *testing.T) {
+	// When multiple events result in an empty endpoint list, the warning
+	// must only be logged once (on transition), not on every event.
+	slice1 := makeNamedEndpointSlice("kubernetes-abc", "10.0.0.1")
+	slice2 := makeNamedEndpointSlice("kubernetes-def", "10.0.0.2")
+	client := fake.NewClientset(slice1, slice2)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	provider := kubediscovery.NewProvider(client, logger, testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints (non-empty).
+	endpoints := receiveEndpoints(t, updateCh)
+	require.NotEmpty(t, endpoints)
+
+	// Delete first slice — still has slice2.
+	fakeWatcher.Delete(slice1)
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.2:6443"}, endpoints)
+
+	// Delete second slice — transitions to empty (warning expected).
+	fakeWatcher.Delete(slice2)
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.Empty(t, endpoints)
+
+	// Re-add and re-delete to create another empty event.
+	slice3 := makeNamedEndpointSlice("kubernetes-ghi", "10.0.0.3")
+	slice3.ResourceVersion = "10"
+	fakeWatcher.Add(slice3)
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.3:6443"}, endpoints)
+
+	// Delete it — transitions to empty again (second warning expected).
+	fakeWatcher.Delete(slice3)
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.Empty(t, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+
+	// Count the number of "all endpoints removed" warnings.
+	var warnCount int
+
+	for _, entry := range logs.All() {
+		if entry.Level == zap.WarnLevel && entry.Message == logAllEndpointsRemoved {
+			warnCount++
+		}
+	}
+
+	// Exactly 2: one for each non-empty → empty transition.
+	assert.Equal(t, 2, warnCount,
+		"warning should be logged exactly once per non-empty to empty transition")
+}
+
+func TestRun_410GoneRelistToEmptyLogsWarning(t *testing.T) {
+	// When 410 Gone triggers a re-list that returns an empty endpoint list,
+	// a warning should be logged.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	// Make the re-list return empty results.
+	var listCount atomic.Int32
+	client.PrependReactor("list", "endpointslices",
+		func(_ k8stesting.Action) (bool, runtime.Object, error) {
+			if listCount.Add(1) > 1 {
+				return true, &discoveryv1.EndpointSliceList{}, nil
+			}
+
+			return false, nil, nil
+		},
+	)
+
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	provider := kubediscovery.NewProvider(client, logger, testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints (non-empty).
+	endpoints := receiveEndpoints(t, updateCh)
+	require.NotEmpty(t, endpoints)
+
+	// Inject 410 Gone.
+	fakeWatcher.Error(&metav1.Status{
+		Status: metav1.StatusFailure,
+		Code:   410,
+		Reason: metav1.StatusReasonGone,
+	})
+
+	// Receive the empty list from re-list.
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.Empty(t, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+
+	// Verify the empty transition warning was logged.
+	var found bool
+
+	for _, entry := range logs.All() {
+		if entry.Level == zap.WarnLevel && entry.Message == logAllEndpointsRemoved {
+			found = true
+
+			break
+		}
+	}
+
+	assert.True(t, found,
+		"expected warning log when re-list after 410 Gone returns empty endpoints")
 }
 
 // --- Tests: deep copy endpoints before storing ---
