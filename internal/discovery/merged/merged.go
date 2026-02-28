@@ -180,7 +180,7 @@ func (mp *Provider) mergeLoop(
 		case <-ctx.Done():
 			return
 		case upd := <-internalCh:
-			latest[upd.index] = upd.endpoints
+			applyUpdate(latest, upd)
 		}
 
 		// Drain all pending updates so the merged result reflects the
@@ -196,10 +196,41 @@ func (mp *Provider) mergeLoop(
 			continue
 		}
 
+		// Try to send the merged result. While blocked on updateCh,
+		// continue reading from internalCh to prevent backpressure
+		// cascade to upstream providers.
+		if !mp.sendWithDrain(ctx, internalCh, updateCh, latest, merged) {
+			return
+		}
+	}
+}
+
+// sendWithDrain attempts to send merged on updateCh. While blocked, it
+// continues reading from internalCh and recomputes the merged result.
+// Returns false if ctx is cancelled and the caller should return.
+func (mp *Provider) sendWithDrain(
+	ctx context.Context,
+	internalCh <-chan providerUpdate,
+	updateCh chan<- []string,
+	latest map[int][]string,
+	merged []string,
+) bool {
+	for {
 		select {
 		case updateCh <- merged:
+			return true
+		case upd := <-internalCh:
+			applyUpdate(latest, upd)
+			mp.drainPending(internalCh, latest)
+
+			merged = mergeAndDedup(latest)
+			if len(merged) == 0 {
+				mp.logger.Error("merged endpoint list is empty, skipping send")
+
+				return true
+			}
 		case <-ctx.Done():
-			return
+			return false
 		}
 	}
 }
@@ -213,10 +244,21 @@ func (mp *Provider) drainPending(
 	for {
 		select {
 		case upd := <-internalCh:
-			latest[upd.index] = upd.endpoints
+			applyUpdate(latest, upd)
 		default:
 			return
 		}
+	}
+}
+
+// applyUpdate stores or deletes a provider's endpoints in the latest map.
+// Nil or empty endpoint lists cause the entry to be deleted to avoid
+// retaining stale nil entries that waste memory and iteration time.
+func applyUpdate(latest map[int][]string, upd providerUpdate) {
+	if len(upd.endpoints) == 0 {
+		delete(latest, upd.index)
+	} else {
+		latest[upd.index] = upd.endpoints
 	}
 }
 
