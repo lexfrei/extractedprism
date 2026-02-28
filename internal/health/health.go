@@ -69,10 +69,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Start begins listening and serving. It blocks until the server is shut down.
 // Returns nil on graceful shutdown.
-func (s *Server) Start() error {
+func (s *Server) Start(ctx context.Context) error {
 	lc := net.ListenConfig{}
 
-	lis, err := lc.Listen(context.Background(), "tcp", s.httpServer.Addr)
+	lis, err := lc.Listen(ctx, "tcp", s.httpServer.Addr)
 	if err != nil {
 		return errors.Wrap(err, "health server listen")
 	}
@@ -117,13 +117,27 @@ func (s *Server) Addr() string {
 	return lis.Addr().String()
 }
 
-func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleHealthz(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "ok\n")
 }
 
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleReadyz(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	healthy, err := s.checker.Healthy()
