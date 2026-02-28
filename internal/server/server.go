@@ -183,6 +183,10 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 	}
 
 	if srv.probeFn == nil {
+		// The probe intentionally ignores errors from Healthy(). The liveness
+		// check only cares whether the LB goroutine can respond (not deadlocked).
+		// A degraded LB that returns errors is still "alive" — the readiness
+		// probe (/readyz) is responsible for signaling unhealthy upstreams.
 		srv.probeFn = func() {
 			_, _ = srv.lbHandle.Healthy()
 		}
@@ -292,6 +296,11 @@ func (srv *Server) Run(ctx context.Context) error {
 			// Only signal discovery failure for unexpected exits, not normal
 			// context-driven shutdowns. During graceful shutdown, the parent
 			// context is cancelled and the discovery pipeline exits as expected.
+			//
+			// There is a narrow TOCTOU window: the parent context could be
+			// cancelled between the Err() check and the Store(). In that case
+			// discoveryDone may not be set, but Alive() will still return false
+			// after the heartbeat timestamp expires (bounded by livenessThreshold).
 			if parentCtx.Err() == nil {
 				srv.discoveryDone.Store(true)
 			}
@@ -472,7 +481,13 @@ func (srv *Server) runHealth(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		return srv.shutdownHealth(ctx)
+		shutErr := srv.shutdownHealth(ctx)
+
+		// Wait for the Start goroutine to return after shutdown to prevent
+		// it from logging via the test logger after the test has finished.
+		<-errCh
+
+		return shutErr
 	case err := <-errCh:
 		if err != nil {
 			return errors.Wrap(err, "health server start")
