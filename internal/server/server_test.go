@@ -2,6 +2,8 @@ package server_test
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +18,11 @@ import (
 
 	"github.com/lexfrei/extractedprism/internal/config"
 	"github.com/lexfrei/extractedprism/internal/server"
+)
+
+const (
+	waitTimeout = 5 * time.Second
+	pollTick    = 10 * time.Millisecond
 )
 
 var portCounter atomic.Int32
@@ -40,6 +47,23 @@ func validConfig() *config.Config {
 	cfg.HealthTimeout = 2 * time.Second
 
 	return cfg
+}
+
+// waitForHealthz polls the health endpoint until it responds or the timeout fires.
+func waitForHealthz(t *testing.T, healthPort int) {
+	t.Helper()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", healthPort)
+
+	require.Eventually(t, func() bool {
+		resp, err := http.Get(url) //nolint:noctx // test helper, no context needed
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+
+		return resp.StatusCode == http.StatusOK
+	}, waitTimeout, pollTick, "health server did not start in time")
 }
 
 func TestNew_ValidConfig(t *testing.T) {
@@ -73,14 +97,14 @@ func TestRun_StartsAndShutdowns(t *testing.T) {
 
 	go func() { errCh <- srv.Run(ctx) }()
 
-	time.Sleep(300 * time.Millisecond)
+	waitForHealthz(t, cfg.HealthPort)
 
 	cancel()
 
 	select {
 	case err := <-errCh:
 		assert.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("timed out waiting for shutdown")
 	}
 }
@@ -98,14 +122,14 @@ func TestRun_StaticOnlyMode(t *testing.T) {
 
 	go func() { errCh <- srv.Run(ctx) }()
 
-	time.Sleep(300 * time.Millisecond)
+	waitForHealthz(t, cfg.HealthPort)
 
 	cancel()
 
 	select {
 	case err := <-errCh:
 		assert.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("timed out waiting for shutdown")
 	}
 }
@@ -150,14 +174,14 @@ func TestRun_WithDiscoveryEnabled(t *testing.T) {
 
 	go func() { errCh <- srv.Run(ctx) }()
 
-	time.Sleep(500 * time.Millisecond)
+	waitForHealthz(t, cfg.HealthPort)
 
 	cancel()
 
 	select {
 	case err := <-errCh:
 		assert.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("timed out waiting for shutdown")
 	}
 }
@@ -198,7 +222,7 @@ func TestRunHealth_NilReturnDoesNotBlock(t *testing.T) {
 	case err := <-errCh:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "health server exited unexpectedly")
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("Run blocked — goroutine leak: Start returned nil but runHealth did not exit")
 	}
 }
@@ -226,7 +250,7 @@ func TestRunHealth_StartErrorPropagates(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "health server start")
 		assert.Contains(t, err.Error(), "address already in use")
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("Run blocked on health start error")
 	}
 }
@@ -291,14 +315,44 @@ func TestRun_DiscoveryFallbackWithoutCluster(t *testing.T) {
 
 	go func() { errCh <- srv.Run(ctx) }()
 
-	time.Sleep(300 * time.Millisecond)
+	waitForHealthz(t, cfg.HealthPort)
 
 	cancel()
 
 	select {
 	case err := <-errCh:
 		assert.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for shutdown")
+	}
+}
+
+func TestRun_SeedsLBWithStaticEndpoints(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	srv, err := server.New(cfg, log)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	// The health server starts after Run seeds the LB and launches
+	// the errgroup. If healthz is reachable, the seed already happened.
+	waitForHealthz(t, cfg.HealthPort)
+
+	// Verify the original config slice was not mutated by seeding.
+	assert.Equal(t, []string{"127.0.0.1:6443"}, cfg.Endpoints,
+		"config endpoints must not be mutated by seeding")
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(waitTimeout):
 		t.Fatal("timed out waiting for shutdown")
 	}
 }
