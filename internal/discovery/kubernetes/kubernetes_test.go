@@ -36,8 +36,6 @@ func newTestLogger() *zap.Logger {
 	return zap.NewNop()
 }
 
-func boolPtr(b bool) *bool { return &b }
-
 func makeNamedEndpointSlice(name string, ips ...string) *discoveryv1.EndpointSlice {
 	endpoints := make([]discoveryv1.Endpoint, 0, len(ips))
 	for _, addr := range ips {
@@ -546,11 +544,11 @@ func TestRun_FiltersNotReadyEndpoints(t *testing.T) {
 		Endpoints: []discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 			},
 			{
 				Addresses:  []string{"10.0.0.2"},
-				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(false)},
 			},
 			{
 				Addresses: []string{"10.0.0.3"},
@@ -591,11 +589,11 @@ func TestRun_AllEndpointsNotReady(t *testing.T) {
 		Endpoints: []discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(false)},
 			},
 			{
 				Addresses:  []string{"10.0.0.2"},
-				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(false)},
 			},
 		},
 	}
@@ -855,11 +853,11 @@ func TestRun_WatchUpdateFiltersNotReady(t *testing.T) {
 		Endpoints: []discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 			},
 			{
 				Addresses:  []string{"10.0.0.2"},
-				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(false)},
 			},
 		},
 	}
@@ -1221,7 +1219,7 @@ func TestRun_UpdateToAllNotReadyLogsWarning(t *testing.T) {
 		Endpoints: []discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(false)},
 			},
 		},
 	}
