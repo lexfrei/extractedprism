@@ -309,6 +309,13 @@ func (srv *Server) runHeartbeat(ctx context.Context) error {
 // context cancellation is respected even when the probe is blocked (e.g.,
 // deadlocked LB). Returns true if the probe completed, false if the
 // context was cancelled first.
+//
+// When the context is cancelled while the probe goroutine is still running,
+// the goroutine is orphaned. This is an intentional tradeoff: a deadlocked
+// probe cannot be interrupted, so we accept a bounded leak (at most one
+// goroutine per heartbeat tick between cancellation and Run return).
+// The default probe (lbHandle.Healthy) is safe to call on a stopped load
+// balancer — it returns an error without side effects.
 func (srv *Server) probeWithContext(ctx context.Context) bool {
 	probeDone := make(chan struct{})
 

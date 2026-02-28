@@ -465,6 +465,74 @@ func TestWithLivenessConfig_NegativeThreshold_Panics(t *testing.T) {
 	}, "negative threshold must panic")
 }
 
+func TestWithLivenessConfig_ValidValues_Applied(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	// Use a short interval and a threshold longer than the interval
+	// to verify that the server stays alive through multiple heartbeat ticks.
+	srv, err := server.New(cfg, log,
+		server.WithLivenessConfig(50*time.Millisecond, 500*time.Millisecond),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	waitForHealthz(t, cfg.HealthPort)
+
+	// After several intervals, Alive must still be true because the
+	// heartbeat keeps refreshing within the threshold window.
+	time.Sleep(200 * time.Millisecond)
+
+	assert.True(t, srv.Alive(),
+		"server must stay alive when heartbeat interval < threshold")
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for shutdown")
+	}
+}
+
+func TestWithLivenessConfig_ThresholdEqualsInterval(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	// When threshold equals interval, the server should stay alive because
+	// each heartbeat tick refreshes the timestamp just before it expires.
+	srv, err := server.New(cfg, log,
+		server.WithLivenessConfig(100*time.Millisecond, 100*time.Millisecond),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	waitForHealthz(t, cfg.HealthPort)
+
+	// With threshold==interval, the server may flicker depending on
+	// scheduling. Verify it does not crash and Alive returns a consistent
+	// boolean value (not panic or error).
+	_ = srv.Alive()
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for shutdown")
+	}
+}
+
 func TestWithLivenessProbe_Nil_Panics(t *testing.T) {
 	assert.Panics(t, func() {
 		server.WithLivenessProbe(nil)

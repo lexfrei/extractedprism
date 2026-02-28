@@ -47,7 +47,7 @@ golangci-lint run --timeout=5m
 
 Entry point: `cmd/extractedprism/main.go` — Cobra CLI with Viper config binding (`EP_*` env vars).
 
-Core pipeline: `Server.Run()` starts the load balancer, then runs discovery and health in parallel via errgroup.
+Core pipeline: `Server.Run()` starts the load balancer, then runs discovery, heartbeat, and health in parallel via errgroup.
 
 ```text
 main.go → server.Server
@@ -55,12 +55,13 @@ main.go → server.Server
               ├─ merged.Provider
               │     ├─ static.Provider (immediate, always present)
               │     └─ kubernetes.Provider (optional, EndpointSlice watch)
+              ├─ heartbeat probe (periodic LB health check for liveness)
               └─ health.Server (/healthz, /readyz)
 ```
 
 **Key interface**: `discovery.EndpointProvider` — `Run(ctx, updateCh chan<- []string) error`. Providers send endpoint lists on `updateCh`; the merged provider deduplicates and forwards to the load balancer.
 
-**Dependency injection**: `server.New()` accepts `Option` funcs (`WithKubeClient`, `WithHealthServer`) for testing.
+**Dependency injection**: `server.New()` accepts `Option` funcs (`WithKubeClient`, `WithHealthServer`, `WithLivenessConfig`, `WithLivenessProbe`, `WithDiscoveryProviders`) for testing.
 
 ## Development workflow
 
