@@ -530,9 +530,6 @@ func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 	mp := merged.NewMergedProvider(log, burstProv)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Small buffer simulates a slow consumer.
 	updateCh := make(chan []string, 1)
 	errCh := make(chan error, 1)
 
@@ -549,13 +546,21 @@ func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 		case got := <-updateCh:
 			lastReceived = got
 			if len(got) == 1 && got[0] == fmt.Sprintf("10.0.0.%d:6443", burstSize) {
-				cancel()
-
-				return
+				goto done
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for final burst update; last received: %v", lastReceived)
 		}
+	}
+
+done:
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
 	}
 }
 
@@ -589,8 +594,6 @@ func TestRun_DrainCoalescesUpdates(t *testing.T) {
 	mp := merged.NewMergedProvider(log, burstProv)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	updateCh := make(chan []string, 1)
 	errCh := make(chan error, 1)
 
@@ -614,13 +617,21 @@ func TestRun_DrainCoalescesUpdates(t *testing.T) {
 		select {
 		case got := <-updateCh:
 			if len(got) == 1 && got[0] == "10.0.4.1:6443" {
-				cancel()
-
-				return
+				goto done
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for coalesced final update")
 		}
+	}
+
+done:
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
 	}
 }
 
