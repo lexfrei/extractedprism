@@ -4,7 +4,7 @@ package server
 import (
 	"context"
 	"net"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -24,10 +24,11 @@ import (
 )
 
 const (
-	keepAlivePeriod = 30 * time.Second
-	tcpUserTimeout  = 30 * time.Second
-	shutdownTimeout = 5 * time.Second
-	defaultAPIPort  = "6443"
+	keepAlivePeriod   = 30 * time.Second
+	tcpUserTimeout    = 30 * time.Second
+	shutdownTimeout   = 5 * time.Second
+	defaultAPIPort    = "6443"
+	kubeAPIServerName = "kubernetes.default.svc"
 
 	// upstreamChBuffer is the buffer size for the channel between the merged
 	// discovery provider and the load balancer.
@@ -215,25 +216,18 @@ func (srv *Server) getKubeClient() (kubernetes.Interface, error) {
 		return srv.kubeClient, nil
 	}
 
-	return buildInClusterClient(srv.cfg.Endpoints)
+	lbHost := net.JoinHostPort(srv.cfg.BindAddress, strconv.Itoa(srv.cfg.BindPort))
+
+	return buildInClusterClient(lbHost)
 }
 
-func buildInClusterClient(endpoints []string) (kubernetes.Interface, error) {
+func buildInClusterClient(lbHost string) (kubernetes.Interface, error) {
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, errors.Wrap(err, "in-cluster config")
 	}
 
-	// Override host to bypass ClusterIP. extractedprism provides the LB
-	// that CNI uses, so we cannot depend on cluster networking.
-	if len(endpoints) > 0 {
-		host := endpoints[0]
-		if !strings.HasPrefix(host, "https://") {
-			host = "https://" + host
-		}
-
-		restCfg.Host = host
-	}
+	applyLBOverride(restCfg, lbHost)
 
 	client, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
@@ -241,6 +235,15 @@ func buildInClusterClient(endpoints []string) (kubernetes.Interface, error) {
 	}
 
 	return client, nil
+}
+
+// applyLBOverride configures a rest.Config to route API traffic through the
+// local load balancer instead of a single control plane endpoint. ServerName
+// is set to the standard Kubernetes service name which is always present in
+// the API server TLS certificate SANs.
+func applyLBOverride(restCfg *rest.Config, lbHost string) {
+	restCfg.Host = "https://" + lbHost
+	restCfg.ServerName = kubeAPIServerName
 }
 
 // ExtractAPIPort returns the port from the first endpoint, or "6443" as default.
