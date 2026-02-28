@@ -151,6 +151,68 @@ func TestReadyz_ContentType(t *testing.T) {
 	}
 }
 
+func TestHealthz_RejectsNonGetMethods(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	methods := []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch}
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/healthz", nil)
+			rec := httptest.NewRecorder()
+
+			srv.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+			assert.Contains(t, rec.Header().Get("Allow"), http.MethodGet)
+			assert.Contains(t, rec.Header().Get("Allow"), http.MethodHead)
+		})
+	}
+}
+
+func TestReadyz_RejectsNonGetMethods(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	methods := []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch}
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/readyz", nil)
+			rec := httptest.NewRecorder()
+
+			srv.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+			assert.Contains(t, rec.Header().Get("Allow"), http.MethodGet)
+			assert.Contains(t, rec.Header().Get("Allow"), http.MethodHead)
+		})
+	}
+}
+
+func TestHealthz_HeadMethod(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodHead, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestReadyz_HeadMethod(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodHead, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestUnknownPathReturns404(t *testing.T) {
 	checker := &mockChecker{healthy: true}
 	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
@@ -209,9 +271,10 @@ func TestShutdown(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 
+	defer resp.Body.Close()
+
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "ok\n", string(body))

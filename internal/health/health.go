@@ -117,13 +117,34 @@ func (s *Server) Addr() string {
 	return lis.Addr().String()
 }
 
-func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+// allowGetOrHead returns true if the request method is GET or HEAD.
+// For other methods it writes a 405 response with an Allow header and returns false.
+func allowGetOrHead(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return true
+	}
+
+	w.Header().Set("Allow", "GET, HEAD")
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+
+	return false
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if !allowGetOrHead(w, r) {
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "ok\n")
 }
 
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if !allowGetOrHead(w, r) {
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	healthy, err := s.checker.Healthy()
