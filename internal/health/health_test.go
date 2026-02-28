@@ -84,6 +84,44 @@ func TestReadyz_ErrorReturns503(t *testing.T) {
 	assert.Equal(t, "not ready: connection refused\n", rec.Body.String())
 }
 
+const expectedContentType = "text/plain; charset=utf-8"
+
+func TestHealthz_ContentType(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, expectedContentType, rec.Header().Get("Content-Type"))
+}
+
+func TestReadyz_ContentType(t *testing.T) {
+	tests := []struct {
+		name    string
+		checker *mockChecker
+	}{
+		{name: "healthy", checker: &mockChecker{healthy: true}},
+		{name: "unhealthy", checker: &mockChecker{healthy: false}},
+		{name: "error", checker: &mockChecker{healthy: false, err: errors.New("fail")}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := health.NewServer("127.0.0.1", 0, tt.checker, newTestLogger())
+
+			req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+			rec := httptest.NewRecorder()
+
+			srv.ServeHTTP(rec, req)
+
+			assert.Equal(t, expectedContentType, rec.Header().Get("Content-Type"))
+		})
+	}
+}
+
 func TestUnknownPathReturns404(t *testing.T) {
 	checker := &mockChecker{healthy: true}
 	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
