@@ -143,6 +143,7 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 - `--bind-address` must be a valid IP address or RFC 1123-compliant hostname
 - `--endpoints` must not be empty; each entry must be a valid `host:port` pair where port is a number in the range 1-65535
 - `--bind-port` and `--health-port` must be in the range 1-65535 and must differ
+- `--health-interval` and `--health-timeout` must be at least 1 second
 - `--health-timeout` must be less than `--health-interval`
 
 ## How it works

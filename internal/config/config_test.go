@@ -273,6 +273,44 @@ func TestValidate_HealthTimingInvalid(t *testing.T) {
 	assert.True(t, errors.Is(err, config.ErrInvalidHealthTiming))
 }
 
+func TestValidate_InvalidHealthDuration(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+		timeout  time.Duration
+	}{
+		{name: "zero interval", interval: 0, timeout: 15 * time.Second},
+		{name: "negative interval", interval: -1 * time.Second, timeout: 15 * time.Second},
+		{name: "sub-second interval", interval: 500 * time.Millisecond, timeout: 15 * time.Second},
+		{name: "zero timeout", interval: 20 * time.Second, timeout: 0},
+		{name: "negative timeout", interval: 20 * time.Second, timeout: -1 * time.Second},
+		{name: "sub-second timeout", interval: 20 * time.Second, timeout: 100 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.HealthInterval = tt.interval
+			cfg.HealthTimeout = tt.timeout
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidHealthDuration))
+		})
+	}
+}
+
+func TestValidate_ValidHealthDurationBoundary(t *testing.T) {
+	cfg := config.NewDefault()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.HealthInterval = 2 * time.Second
+	cfg.HealthTimeout = 1 * time.Second
+
+	err := cfg.Validate()
+	require.NoError(t, err)
+}
+
 func TestParseEndpoints(t *testing.T) {
 	tests := []struct {
 		name     string
