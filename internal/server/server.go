@@ -29,13 +29,19 @@ const (
 	shutdownTimeout = 5 * time.Second
 	defaultAPIPort  = "6443"
 
-	// UpstreamChBuffer is the buffer size for the channel between the merged
-	// discovery provider and the load balancer. Value 16 is an empirical
-	// heuristic: a typical cluster has 3-5 control plane nodes, so even a
-	// full EndpointSlice churn (add+modify+delete per slice) produces fewer
-	// than 16 updates in a burst. This prevents the provider from blocking
-	// when the load balancer is slow to reconcile routes.
-	UpstreamChBuffer = 16
+	// upstreamChBuffer is the buffer size for the channel between the merged
+	// discovery provider and the load balancer.
+	//
+	// Value 16 is an empirical heuristic: a typical cluster has 3-5 control
+	// plane nodes, so even a full EndpointSlice churn (add+modify+delete per
+	// slice) produces fewer than 16 updates in a burst.
+	//
+	// Buffering was chosen over non-blocking overwrite semantics because
+	// every endpoint update matters: overwrite could silently drop
+	// intermediate states (e.g., a remove followed by an add), causing the
+	// load balancer to route to stale backends. A sufficiently large buffer
+	// absorbs realistic bursts without losing any update.
+	upstreamChBuffer = 16
 )
 
 // healthServer abstracts the health HTTP server for testing.
@@ -87,7 +93,7 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 		cfg:        cfg,
 		logger:     logger,
 		lbHandle:   lbHandle,
-		upstreamCh: make(chan []string, UpstreamChBuffer),
+		upstreamCh: make(chan []string, upstreamChBuffer),
 	}
 
 	for _, opt := range opts {

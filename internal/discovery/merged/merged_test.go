@@ -501,12 +501,12 @@ func TestRun_ZeroProvidersReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "no providers configured")
 }
 
-func TestRun_BurstUpdatesAreNotLost(t *testing.T) {
+func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
-	const burstSize = 10
+	const burstSize = 12
 
-	// Provider sends burstSize rapid sequential updates.
+	// Provider sends burstSize rapid sequential updates without waiting.
 	burstProv := &mockProvider{
 		sendFunc: func(ctx context.Context, ch chan<- []string) error {
 			for i := range burstSize {
@@ -529,12 +529,19 @@ func TestRun_BurstUpdatesAreNotLost(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	updateCh := make(chan []string, burstSize+1)
+	// Buffer of 1 simulates a slow consumer: the merge loop can only
+	// push one update ahead. With providerChBuffer=1, the provider
+	// would block after the first or second send. With providerChBuffer=16,
+	// all 12 burst updates can be queued before the consumer reads.
+	updateCh := make(chan []string, 1)
 	errCh := make(chan error, 1)
 
 	go func() { errCh <- mp.Run(ctx, updateCh) }()
 
-	// Drain all updates until we see the final value.
+	// Simulate slow consumer: wait before draining.
+	time.Sleep(200 * time.Millisecond)
+
+	// Drain all updates until we see the final burst value.
 	deadline := time.After(3 * time.Second)
 	var lastReceived []string
 

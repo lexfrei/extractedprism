@@ -12,11 +12,13 @@ import (
 	"github.com/lexfrei/extractedprism/internal/discovery"
 )
 
-// ProviderChBuffer is the buffer size for each sub-provider's internal channel.
-// Value 16 matches UpstreamChBuffer: the per-provider channel should absorb
-// the same burst magnitude so the cascade of buffers (provider -> merge loop
-// -> load balancer) does not create a new bottleneck at an intermediate stage.
-const ProviderChBuffer = 16
+// providerChBuffer is the buffer size for each sub-provider's internal channel.
+//
+// Value 16 matches the upstream channel buffer in the server package: each
+// stage in the pipeline (provider -> merge loop -> load balancer) should
+// absorb the same burst magnitude so no intermediate stage becomes the new
+// bottleneck. See server.go upstreamChBuffer for the rationale on the value.
+const providerChBuffer = 16
 
 // Provider merges endpoints from multiple discovery providers.
 type Provider struct {
@@ -96,7 +98,7 @@ func (mp *Provider) runProvider(
 	defer wg.Done()
 	defer provWg.Done()
 
-	provCh := make(chan []string, ProviderChBuffer)
+	provCh := make(chan []string, providerChBuffer)
 
 	wg.Go(func() {
 		mp.forwardUpdates(ctx, idx, provCh, internalCh)
