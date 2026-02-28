@@ -64,6 +64,52 @@ func TestValidate_InvalidEndpoint(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidEndpointPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "non-numeric port", endpoint: "10.0.0.1:abc"},
+		{name: "port zero", endpoint: "10.0.0.1:0"},
+		{name: "port too high", endpoint: "10.0.0.1:99999"},
+		{name: "negative port", endpoint: "10.0.0.1:-1"},
+		{name: "float port", endpoint: "10.0.0.1:6443.5"},
+		{name: "port 65536", endpoint: "10.0.0.1:65536"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{tt.endpoint}
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
+			assert.Contains(t, err.Error(), "port must be a number between 1 and 65535")
+		})
+	}
+}
+
+func TestValidate_EndpointPortBoundaryValid(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "minimum valid port", endpoint: "10.0.0.1:1"},
+		{name: "maximum valid port", endpoint: "10.0.0.1:65535"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{tt.endpoint}
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidate_InvalidPort(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -140,7 +140,7 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 
 ### Validation rules
 
-- `--endpoints` must not be empty; each entry must be a valid `host:port` pair
+- `--endpoints` must not be empty; each entry must be a valid `host:port` pair where port is a number in the range 1-65535
 - `--bind-port` and `--health-port` must be in the range 1-65535 and must differ
 - `--health-timeout` must be less than `--health-interval`
 
