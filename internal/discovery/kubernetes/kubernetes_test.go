@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -862,6 +864,178 @@ func TestRun_WatchUpdateFiltersNotReady(t *testing.T) {
 
 	endpoints = receiveEndpoints(t, updateCh)
 	assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+// --- Tests for #50: watch error should preserve status details ---
+
+func TestRun_WatchErrorIncludesStatusDetails(t *testing.T) {
+	// Non-410 watch error events must include the *metav1.Status details
+	// (code, reason, message) in the logged error for debugging.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	provider := kubediscovery.NewProvider(client, logger, testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints.
+	receiveEndpoints(t, updateCh)
+
+	// Inject a 500 Internal Server Error with details.
+	fakeWatcher.Error(&metav1.Status{
+		Status:  metav1.StatusFailure,
+		Code:    500,
+		Reason:  metav1.StatusReasonInternalError,
+		Message: "etcd cluster is unavailable",
+	})
+
+	// Wait for the provider to log the error with backoff.
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	waitForRun(t, errCh)
+
+	// Find the "watch error, restarting with backoff" log entry.
+	var found bool
+
+	for _, entry := range logs.All() {
+		if entry.Message == "watch error, restarting with backoff" {
+			found = true
+			errField := entry.ContextMap()["error"]
+			errStr, ok := errField.(string)
+			require.True(t, ok, "error field should be a string")
+
+			assert.Contains(t, errStr, "500",
+				"error should include HTTP status code")
+			assert.Contains(t, errStr, "etcd cluster is unavailable",
+				"error should include status message")
+
+			break
+		}
+	}
+
+	assert.True(t, found, "expected 'watch error, restarting with backoff' log entry")
+}
+
+// --- Tests for #52: warn when endpoint list transitions to empty ---
+
+func TestRun_LastSliceDeletionLogsWarning(t *testing.T) {
+	// When the last EndpointSlice is deleted and the endpoint list transitions
+	// from non-empty to empty, a warning must be logged.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	provider := kubediscovery.NewProvider(client, logger, testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints (non-empty list).
+	endpoints := receiveEndpoints(t, updateCh)
+	require.NotEmpty(t, endpoints, "initial endpoints must be non-empty")
+
+	// Delete the only slice — transitions endpoint list to empty.
+	fakeWatcher.Delete(initial)
+
+	// Receive the empty list (still sent, no data loss).
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.Empty(t, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+
+	// Verify that a warning about empty endpoint list was logged.
+	var found bool
+
+	for _, entry := range logs.All() {
+		if entry.Level == zap.WarnLevel && entry.Message == "all endpoints removed, endpoint list is now empty" {
+			found = true
+
+			break
+		}
+	}
+
+	assert.True(t, found,
+		"expected warning log when endpoint list transitions to empty")
+}
+
+// --- Tests for #60: deep copy endpoints before storing ---
+
+func TestRun_MutatingOriginalSliceDoesNotCorruptCache(t *testing.T) {
+	// After storing endpoints from a watch event, mutating the original
+	// EndpointSlice object must not affect the cached data.
+	initial := makeNamedEndpointSlice("kubernetes-abc", "10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints.
+	receiveEndpoints(t, updateCh)
+
+	// Send a watch update with a new slice.
+	slice := makeNamedEndpointSlice("kubernetes-abc", "10.0.0.1")
+	slice.ResourceVersion = "2"
+	fakeWatcher.Modify(slice)
+
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
+
+	// Mutate the original slice object after it was stored in the cache.
+	slice.Endpoints[0].Addresses[0] = "10.0.0.99"
+
+	// Trigger a cache read by adding a second slice.
+	slice2 := makeNamedEndpointSlice("kubernetes-def", "10.0.0.2")
+	slice2.ResourceVersion = "3"
+	fakeWatcher.Modify(slice2)
+
+	endpoints = receiveEndpoints(t, updateCh)
+
+	// The first slice's cached endpoint must still be 10.0.0.1, not 10.0.0.99.
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints,
+		"mutating original slice after storage must not corrupt the cache")
 
 	cancel()
 	waitForRun(t, errCh)
