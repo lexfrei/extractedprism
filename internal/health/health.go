@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -24,21 +25,48 @@ type Checker interface {
 	Healthy() (bool, error)
 }
 
+// LivenessChecker reports whether the system is alive.
+// Unlike Checker, liveness is a binary signal with no error — the system is
+// either running or it is not.
+type LivenessChecker interface {
+	Alive() bool
+}
+
 // Server serves HTTP health-check endpoints.
 type Server struct {
 	httpServer *http.Server
 	checker    Checker
+	liveness   LivenessChecker
 	logger     *zap.Logger
 
 	mu       sync.Mutex
 	listener net.Listener
+
+	// livenessLogged tracks whether a liveness failure has been logged.
+	// Used for transition-based logging: logs once on alive→dead transition,
+	// resets when liveness recovers.
+	livenessLogged atomic.Bool
 }
 
 // NewServer creates a health Server bound to the given address and port.
-func NewServer(bindAddress string, port int, checker Checker, logger *zap.Logger) *Server {
+// Panics if checker, liveness, or logger is nil.
+func NewServer(bindAddress string, port int, checker Checker, liveness LivenessChecker, logger *zap.Logger) *Server {
+	if checker == nil {
+		panic("health.NewServer: checker must not be nil")
+	}
+
+	if liveness == nil {
+		panic("health.NewServer: liveness must not be nil")
+	}
+
+	if logger == nil {
+		panic("health.NewServer: logger must not be nil")
+	}
+
 	srv := &Server{
-		checker: checker,
-		logger:  logger,
+		checker:  checker,
+		liveness: liveness,
+		logger:   logger,
 	}
 
 	mux := http.NewServeMux()
@@ -138,6 +166,23 @@ func allowReadOnly(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	if !s.liveness.Alive() {
+		// Log only on transition (alive → dead) to avoid spamming during
+		// repeated probe failures. Resets when liveness recovers.
+		if !s.livenessLogged.Swap(true) {
+			s.logger.Warn("liveness check failed")
+		}
+
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "not alive\n")
+
+		return
+	}
+
+	// Reset so the next transition to not-alive logs again.
+	s.livenessLogged.Store(false)
+
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "ok\n")
 }

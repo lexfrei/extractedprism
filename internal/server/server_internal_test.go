@@ -2,6 +2,7 @@ package server
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/client-go/rest"
@@ -43,6 +44,50 @@ func TestApplyLBOverride_IPv6BindAddress(t *testing.T) {
 
 	assert.Equal(t, "https://[::1]:7445", restCfg.Host)
 	assert.Equal(t, kubeAPIServerName, restCfg.ServerName)
+}
+
+func TestAlive_StaleHeartbeat_ReturnsFalse(t *testing.T) {
+	srv := &Server{
+		livenessThreshold: 100 * time.Millisecond,
+	}
+
+	// Set a heartbeat far in the past (beyond threshold).
+	srv.lastHeartbeat.Store(time.Now().Add(-1 * time.Second).UnixNano())
+
+	assert.False(t, srv.Alive(),
+		"Alive must return false when heartbeat is older than threshold")
+}
+
+func TestAlive_FreshHeartbeat_ReturnsTrue(t *testing.T) {
+	srv := &Server{
+		livenessThreshold: 5 * time.Second,
+	}
+
+	srv.lastHeartbeat.Store(time.Now().UnixNano())
+
+	assert.True(t, srv.Alive(),
+		"Alive must return true when heartbeat is within threshold")
+}
+
+func TestAlive_ZeroHeartbeat_ReturnsFalse(t *testing.T) {
+	srv := &Server{
+		livenessThreshold: 5 * time.Second,
+	}
+
+	assert.False(t, srv.Alive(),
+		"Alive must return false when heartbeat has never been set")
+}
+
+func TestAlive_DiscoveryDone_ReturnsFalse(t *testing.T) {
+	srv := &Server{
+		livenessThreshold: 5 * time.Second,
+	}
+
+	srv.lastHeartbeat.Store(time.Now().UnixNano())
+	srv.discoveryDone.Store(true)
+
+	assert.False(t, srv.Alive(),
+		"Alive must return false when discovery pipeline has exited")
 }
 
 func TestSeedEndpoints_CopiesSlice(t *testing.T) {
