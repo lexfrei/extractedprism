@@ -405,6 +405,18 @@ func TestExtractAPIPort(t *testing.T) {
 	}
 }
 
+func TestWithLivenessConfig_ZeroInterval_Panics(t *testing.T) {
+	assert.Panics(t, func() {
+		server.WithLivenessConfig(0, time.Second)
+	}, "zero interval must panic")
+}
+
+func TestWithLivenessConfig_NegativeThreshold_Panics(t *testing.T) {
+	assert.Panics(t, func() {
+		server.WithLivenessConfig(time.Second, -1*time.Second)
+	}, "negative threshold must panic")
+}
+
 func TestRun_DiscoveryFallbackWithoutCluster(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	cfg := validConfig()

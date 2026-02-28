@@ -381,3 +381,11 @@ func TestStart_AcceptsContext(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }
+
+func TestNewServer_NilLiveness_Panics(t *testing.T) {
+	checker := &mockChecker{healthy: true, alive: true}
+
+	assert.Panics(t, func() {
+		health.NewServer("127.0.0.1", 0, checker, nil, newTestLogger())
+	}, "NewServer must panic when liveness is nil")
+}

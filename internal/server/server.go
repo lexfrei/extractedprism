@@ -81,8 +81,12 @@ func WithHealthServer(hs healthServer) Option {
 }
 
 // WithLivenessConfig overrides the heartbeat interval and liveness threshold.
-// Useful for testing with shorter durations.
+// Both values must be positive. Panics otherwise.
 func WithLivenessConfig(interval, threshold time.Duration) Option {
+	if interval <= 0 || threshold <= 0 {
+		panic("WithLivenessConfig: interval and threshold must be positive")
+	}
+
 	return func(srv *Server) {
 		srv.heartbeatInterval = interval
 		srv.livenessThreshold = threshold
@@ -205,6 +209,10 @@ func (srv *Server) Healthy() (bool, error) {
 func (srv *Server) Run(ctx context.Context) error {
 	defer srv.lastHeartbeat.Store(0)
 
+	// Mark alive before launching goroutines so the health server
+	// never sees lastHeartbeat == 0 during normal startup.
+	srv.lastHeartbeat.Store(time.Now().UnixNano())
+
 	err := srv.lbHandle.Start(srv.upstreamCh)
 	if err != nil {
 		return errors.Wrap(err, "start load balancer")
@@ -246,9 +254,6 @@ func (srv *Server) Run(ctx context.Context) error {
 func (srv *Server) runHeartbeat(ctx context.Context) error {
 	ticker := time.NewTicker(srv.heartbeatInterval)
 	defer ticker.Stop()
-
-	// Initial heartbeat so Alive() returns true immediately.
-	srv.lastHeartbeat.Store(time.Now().UnixNano())
 
 	for {
 		select {
