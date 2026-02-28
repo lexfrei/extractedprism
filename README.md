@@ -174,6 +174,8 @@ The health HTTP server exposes two endpoints on the configured health port:
 - **`/healthz`** (liveness): Always returns HTTP 200. The proxy process is alive.
 - **`/readyz`** (readiness): Queries the load balancer's `Healthy()` method. Returns HTTP 200 if at least one upstream is reachable, HTTP 503 otherwise.
 
+Both endpoints accept only GET and HEAD requests. Other methods return 405 Method Not Allowed. OPTIONS returns 204 with the allowed methods.
+
 ### Graceful shutdown
 
 On `SIGINT` or `SIGTERM`, the server cancels its context, which stops endpoint discovery, shuts down the TCP load balancer (closing the listener and waiting for active connections to drain), and initiates a 5-second graceful shutdown of the health HTTP server.

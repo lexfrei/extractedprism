@@ -41,7 +41,7 @@ const (
 
 // healthServer abstracts the health HTTP server for testing.
 type healthServer interface {
-	Start() error
+	Start(ctx context.Context) error
 	Shutdown(ctx context.Context) error
 }
 
@@ -261,7 +261,7 @@ func (srv *Server) runHealth(ctx context.Context) error {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- srv.healthSrv.Start()
+		errCh <- srv.healthSrv.Start(ctx)
 	}()
 
 	select {

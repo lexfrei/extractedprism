@@ -168,7 +168,7 @@ type immediateHealthServer struct {
 	startErr error
 }
 
-func (m *immediateHealthServer) Start() error {
+func (m *immediateHealthServer) Start(_ context.Context) error {
 	return m.startErr
 }
 
