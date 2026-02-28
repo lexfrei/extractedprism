@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
@@ -158,6 +159,75 @@ func TestRun_WithDiscoveryEnabled(t *testing.T) {
 		assert.NoError(t, err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for shutdown")
+	}
+}
+
+// immediateHealthServer returns nil from Start immediately, simulating
+// an externally closed listener or unexpected clean exit.
+type immediateHealthServer struct {
+	startErr error
+}
+
+func (m *immediateHealthServer) Start() error {
+	return m.startErr
+}
+
+func (m *immediateHealthServer) Shutdown(_ context.Context) error {
+	return nil
+}
+
+func TestRunHealth_NilReturnDoesNotBlock(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	srv, err := server.New(cfg, log,
+		server.WithHealthServer(&immediateHealthServer{startErr: nil}),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	// Run should complete promptly when health Start returns nil,
+	// not block forever waiting on errCh.
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "health server exited unexpectedly")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run blocked — goroutine leak: Start returned nil but runHealth did not exit")
+	}
+}
+
+func TestRunHealth_StartErrorPropagates(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	srv, err := server.New(cfg, log,
+		server.WithHealthServer(&immediateHealthServer{
+			startErr: errors.New("bind: address already in use"),
+		}),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "health server start")
+		assert.Contains(t, err.Error(), "address already in use")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run blocked on health start error")
 	}
 }
 

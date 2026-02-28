@@ -76,6 +76,52 @@ func TestStaticProvider_Run_SendsEndpoints(t *testing.T) {
 	}
 }
 
+func TestStaticProvider_Run_SliceIsolation(t *testing.T) {
+	provider, err := static.NewStaticProvider([]string{"10.0.0.1:6443", "10.0.0.2:6443"})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, 1)
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	select {
+	case received := <-updateCh:
+		// Mutate the received slice.
+		received[0] = "CORRUPTED"
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for endpoints")
+	}
+
+	cancel()
+
+	// Run the provider again to verify internal state was not corrupted.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+
+	updateCh2 := make(chan []string, 1)
+
+	go func() {
+		_ = provider.Run(ctx2, updateCh2)
+	}()
+
+	select {
+	case received := <-updateCh2:
+		assert.Equal(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, received,
+			"internal endpoints should not be affected by consumer mutation")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second run endpoints")
+	}
+
+	cancel2()
+}
+
 func TestStaticProvider_Run_CancelledBeforeSend(t *testing.T) {
 	provider, err := static.NewStaticProvider([]string{"10.0.0.1:6443"})
 	require.NoError(t, err)
