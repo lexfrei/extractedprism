@@ -45,6 +45,14 @@ func TestStaticProvider_New_InvalidEndpoint(t *testing.T) {
 	}
 }
 
+func TestStaticProvider_New_InvalidEndpoint_ErrorFormat(t *testing.T) {
+	_, err := static.NewStaticProvider([]string{"10.0.0.1"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, static.ErrInvalidEndpoint))
+	assert.Contains(t, err.Error(), `endpoint "10.0.0.1"`,
+		"error message must use quoted endpoint format")
+}
+
 func TestStaticProvider_Run_SendsEndpoints(t *testing.T) {
 	endpoints := []string{"10.0.0.1:6443", "10.0.0.2:6443"}
 	provider, err := static.NewStaticProvider(endpoints)

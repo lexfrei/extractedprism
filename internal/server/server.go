@@ -28,6 +28,15 @@ const (
 	tcpUserTimeout  = 30 * time.Second
 	shutdownTimeout = 5 * time.Second
 	defaultAPIPort  = "6443"
+
+	// upstreamChBuffer is the buffer size for the channel between the merged
+	// discovery provider and the load balancer.
+	//
+	// Value 16 is a heuristic sufficient for typical clusters (3-5 control
+	// plane nodes). Under extreme churn the pipeline may still briefly block
+	// but will not lose data -- blocking only delays delivery, it does not
+	// drop updates.
+	upstreamChBuffer = 16
 )
 
 // healthServer abstracts the health HTTP server for testing.
@@ -79,7 +88,7 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 		cfg:        cfg,
 		logger:     logger,
 		lbHandle:   lbHandle,
-		upstreamCh: make(chan []string, 1),
+		upstreamCh: make(chan []string, upstreamChBuffer),
 	}
 
 	for _, opt := range opts {

@@ -165,12 +165,12 @@ func validateEndpoints(endpoints []string) error {
 	for _, endpoint := range endpoints {
 		host, port, err := net.SplitHostPort(endpoint)
 		if err != nil || host == "" || port == "" {
-			return errors.Wrap(ErrInvalidEndpoint, endpoint)
+			return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q", endpoint)
 		}
 
 		portNum, parseErr := strconv.Atoi(port)
 		if parseErr != nil || portNum < minPort || portNum > maxPort {
-			return errors.Wrapf(ErrInvalidEndpoint, "%s: port must be a number between 1 and 65535", endpoint)
+			return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q: port must be a number between 1 and 65535", endpoint)
 		}
 	}
 
