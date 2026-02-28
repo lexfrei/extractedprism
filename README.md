@@ -106,7 +106,7 @@ Pre-built multi-arch container images are available:
 docker pull ghcr.io/lexfrei/extractedprism:latest
 ```
 
-The image is built `FROM scratch` with only the static binary and CA certificates. No shell or other tools are included.
+The image is built `FROM scratch` with only the static binary. No shell, CA certificates, or other tools are included.
 
 ### Building from source
 
@@ -163,7 +163,7 @@ The TCP load balancer is created via `controlplane.NewLoadBalancer` from `sidero
 The merged discovery provider runs all configured sub-providers concurrently and combines their results:
 
 - **Static provider**: Sends the configured endpoints once at startup, then blocks until shutdown. Provides the baseline set of API server addresses that is always available.
-- **Kubernetes provider**: Lists EndpointSlice resources on startup, then establishes a Watch. It maintains a local cache of all known EndpointSlice objects; on each Watch event (add, modify, delete), the cache is updated and the full endpoint list is recomputed from all cached slices. Endpoints where `Conditions.Ready` is explicitly `false` are excluded from the list. This ensures that updating one slice does not lose endpoints from other slices. On Watch errors, it reconnects with exponential backoff and jitter. On 410 Gone (etcd compaction), it performs a full re-list to rebuild the cache. The Kubernetes client connects directly to one of the static endpoint IPs (bypassing the `kubernetes.default.svc` ClusterIP) to avoid a circular dependency with the CNI plugin. When running outside a cluster, the provider gracefully degrades and the server operates with static endpoints only.
+- **Kubernetes provider**: Lists EndpointSlice resources on startup, then establishes a Watch. It maintains a local cache of all known EndpointSlice objects; on each Watch event (add, modify, delete), the cache is updated and the full endpoint list is recomputed from all cached slices. Endpoints where `Conditions.Ready` is explicitly `false` are excluded from the list. This ensures that updating one slice does not lose endpoints from other slices. On Watch errors, it reconnects with exponential backoff and jitter. On 410 Gone (etcd compaction), it performs a full re-list to rebuild the cache. The Kubernetes client connects through the local load balancer (bypassing the `kubernetes.default.svc` ClusterIP) to avoid a circular dependency with the CNI plugin and to benefit from failover across all configured endpoints. When running outside a cluster, the provider gracefully degrades and the server operates with static endpoints only.
 
 The merged provider deduplicates endpoints across all sub-providers and sends the combined list to the load balancer. If the merged list would be empty, the update is skipped to prevent routing to zero backends. Provider failures are isolated: if the Kubernetes provider fails, the static provider continues operating independently. The merged provider only returns an error if all sub-providers fail.
 
@@ -174,6 +174,8 @@ The health HTTP server exposes two endpoints on the configured health port:
 - **`/healthz`** (liveness): Always returns HTTP 200. The proxy process is alive.
 - **`/readyz`** (readiness): Queries the load balancer's `Healthy()` method. Returns HTTP 200 if at least one upstream is reachable, HTTP 503 otherwise.
 
+Both endpoints accept only GET and HEAD requests. Other methods return 405 Method Not Allowed. OPTIONS returns 204 with the allowed methods.
+
 ### Graceful shutdown
 
 On `SIGINT` or `SIGTERM`, the server cancels its context, which stops endpoint discovery, shuts down the TCP load balancer (closing the listener and waiting for active connections to drain), and initiates a 5-second graceful shutdown of the health HTTP server.
@@ -183,7 +185,7 @@ On `SIGINT` or `SIGTERM`, the server cancels its context, which stops endpoint d
 - **Non-root execution**: Runs as UID 65534 (nobody) with no privilege escalation
 - **Read-only filesystem**: Container runs with a read-only root filesystem
 - **No capabilities**: Does not require `NET_ADMIN`, `NET_RAW`, or any other Linux capabilities
-- **Scratch image**: Built `FROM scratch` -- no shell, no package manager, no tools. Contains only the static binary and CA certificates
+- **Scratch image**: Built `FROM scratch` -- no shell, no package manager, no tools. Contains only the static binary
 - **Localhost binding**: Binds to `127.0.0.1` by default, not accessible from outside the node
 - **Minimal dependencies**: Uses only well-established Go libraries; binary is statically compiled with CGO disabled
 

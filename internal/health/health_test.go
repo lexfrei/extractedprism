@@ -151,6 +151,81 @@ func TestReadyz_ContentType(t *testing.T) {
 	}
 }
 
+func TestMethodNotAllowed(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	paths := []string{"/healthz", "/readyz"}
+	methods := []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch}
+
+	for _, path := range paths {
+		for _, method := range methods {
+			t.Run(path+"/"+method, func(t *testing.T) {
+				req := httptest.NewRequest(method, path, nil)
+				rec := httptest.NewRecorder()
+
+				srv.ServeHTTP(rec, req)
+
+				assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+				assert.Equal(t, "GET, HEAD", rec.Header().Get("Allow"))
+				assert.Contains(t, rec.Body.String(), "method not allowed")
+			})
+		}
+	}
+}
+
+func TestOptions_Returns204WithAllow(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	paths := []string{"/healthz", "/readyz"}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodOptions, path, nil)
+			rec := httptest.NewRecorder()
+
+			srv.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusNoContent, rec.Code)
+			assert.Equal(t, "GET, HEAD", rec.Header().Get("Allow"))
+			assert.Empty(t, rec.Body.String())
+		})
+	}
+}
+
+func TestHead_Returns200(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	// Use httptest.Server for real HTTP round-trip so net/http
+	// suppresses body for HEAD requests per RFC 9110.
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	paths := []string{"/healthz", "/readyz"}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			reqCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodHead, ts.URL+path, nil)
+			require.NoError(t, err)
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			assert.Empty(t, body, "HEAD response must have no body")
+		})
+	}
+}
+
 func TestUnknownPathReturns404(t *testing.T) {
 	checker := &mockChecker{healthy: true}
 	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
@@ -188,7 +263,7 @@ func TestShutdown(t *testing.T) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- srv.Start()
+		errCh <- srv.Start(context.Background())
 	}()
 
 	// Poll until the server is listening.
@@ -208,10 +283,10 @@ func TestShutdown(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
+	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, readErr)
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "ok\n", string(body))
@@ -230,4 +305,23 @@ func TestShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for Start to return")
 	}
+}
+
+func TestStart_AcceptsContext(t *testing.T) {
+	// Verify Start passes the context to Listen. Use a hostname
+	// (not an IP) so Listen must perform DNS resolution, which
+	// respects context cancellation. With a pre-cancelled context
+	// the lookup returns "operation was canceled" immediately.
+	// If Start ignores the context, DNS resolution would succeed
+	// and the error would be "bind: can't assign requested address"
+	// — a different error proving the context was not used.
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("localhost", 0, checker, newTestLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := srv.Start(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 }
