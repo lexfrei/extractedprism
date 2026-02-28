@@ -190,15 +190,11 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
-      - name: Sign container images
-        env:
-          COSIGN_EXPERIMENTAL: "1"
+      - name: Sign container image by digest
         run: |
-          mapfile -t tags < <(echo "$DOCKER_METADATA_OUTPUT_TAGS" | tr '\n' ' ' | xargs -n1)
-          for tag in "${tags[@]}"; do
-            echo "Signing ${tag}"
-            cosign sign --yes "${tag}"
-          done
+          FIRST_TAG=$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          DIGEST=$(docker buildx imagetools inspect "${FIRST_TAG}" --format '{{.Manifest.Digest}}')
+          cosign sign --yes "ghcr.io/${{ github.repository }}@${DIGEST}"
 
       - name: Generate container summary
         run: |
