@@ -505,8 +505,10 @@ func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
 	const burstSize = 12
+	burstDone := make(chan struct{})
 
-	// Provider sends burstSize rapid sequential updates without waiting.
+	// Provider sends burstSize rapid sequential updates without waiting,
+	// then signals burstDone to indicate all sends completed.
 	burstProv := &mockProvider{
 		sendFunc: func(ctx context.Context, ch chan<- []string) error {
 			for i := range burstSize {
@@ -517,6 +519,7 @@ func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 					return nil
 				}
 			}
+			close(burstDone)
 
 			<-ctx.Done()
 
@@ -529,19 +532,25 @@ func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Buffer of 1 simulates a slow consumer: the merge loop can only
-	// push one update ahead. With providerChBuffer=1, the provider
-	// would block after the first or second send. With providerChBuffer=16,
-	// all 12 burst updates can be queued before the consumer reads.
-	updateCh := make(chan []string, 1)
+	// Unbuffered updateCh: the merge loop cannot push ahead at all.
+	// The provider relies entirely on provCh and internalCh buffers
+	// to avoid blocking during the burst.
+	updateCh := make(chan []string)
 	errCh := make(chan error, 1)
 
 	go func() { errCh <- mp.Run(ctx, updateCh) }()
 
-	// Simulate slow consumer: wait before draining.
-	time.Sleep(200 * time.Millisecond)
+	// Verify that the provider completes its burst without the consumer
+	// draining updateCh. With sufficient internal buffers this succeeds;
+	// with buffer=1 the provider would block waiting for the slow consumer.
+	select {
+	case <-burstDone:
+		// Provider completed all sends without blocking.
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider blocked during burst — internal buffers are too small")
+	}
 
-	// Drain all updates until we see the final burst value.
+	// Now drain and verify the final update arrives.
 	deadline := time.After(3 * time.Second)
 	var lastReceived []string
 

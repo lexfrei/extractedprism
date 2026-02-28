@@ -32,15 +32,14 @@ const (
 	// upstreamChBuffer is the buffer size for the channel between the merged
 	// discovery provider and the load balancer.
 	//
-	// Value 16 is an empirical heuristic: a typical cluster has 3-5 control
-	// plane nodes, so even a full EndpointSlice churn (add+modify+delete per
-	// slice) produces fewer than 16 updates in a burst.
+	// Value 16 is a heuristic sufficient for typical clusters (3-5 control
+	// plane nodes). Under extreme churn the pipeline may still briefly block
+	// but will not lose data.
 	//
 	// Buffering was chosen over non-blocking overwrite semantics because
 	// every endpoint update matters: overwrite could silently drop
 	// intermediate states (e.g., a remove followed by an add), causing the
-	// load balancer to route to stale backends. A sufficiently large buffer
-	// absorbs realistic bursts without losing any update.
+	// load balancer to route to stale backends.
 	upstreamChBuffer = 16
 )
 
