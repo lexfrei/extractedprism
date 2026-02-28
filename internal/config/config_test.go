@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,9 @@ func TestValidate_InvalidBindAddress(t *testing.T) {
 		{name: "contains colon", address: "host:port"},
 		{name: "leading hyphen label", address: "-invalid.example.com"},
 		{name: "trailing hyphen label", address: "invalid-.example.com"},
+		{name: "contains underscore", address: "_srv.example.com"},
+		{name: "label too long 64 chars", address: strings.Repeat("a", 64) + ".example.com"},
+		{name: "hostname too long", address: strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 63)},
 	}
 
 	for _, tt := range tests {
@@ -182,6 +186,9 @@ func TestValidate_ValidBindAddress(t *testing.T) {
 		{name: "localhost", address: "localhost"},
 		{name: "hostname with dots", address: "my-host.example.com"},
 		{name: "single label hostname", address: "myhost"},
+		{name: "FQDN with trailing dot", address: "my-host.example.com."},
+		{name: "label at max 63 chars", address: strings.Repeat("a", 63) + ".example.com"},
+		{name: "hostname at max 253 chars", address: strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 61)},
 	}
 
 	for _, tt := range tests {

@@ -104,7 +104,10 @@ func validateBindAddress(addr string) error {
 const maxHostnameLength = 253
 
 func isValidHostname(host string) bool {
-	if len(host) > maxHostnameLength {
+	// Trim a single trailing dot (FQDN notation per RFC 1035).
+	host = strings.TrimSuffix(host, ".")
+
+	if host == "" || len(host) > maxHostnameLength {
 		return false
 	}
 
