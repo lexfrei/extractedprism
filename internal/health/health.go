@@ -12,7 +12,12 @@ import (
 	"go.uber.org/zap"
 )
 
-const readHeaderTimeout = 10 * time.Second
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 10 * time.Second
+	writeTimeout      = 10 * time.Second
+	idleTimeout       = 60 * time.Second
+)
 
 // Checker reports whether the system is healthy.
 type Checker interface {
@@ -44,9 +49,17 @@ func NewServer(bindAddress string, port int, checker Checker, logger *zap.Logger
 		Addr:              fmt.Sprintf("%s:%d", bindAddress, port),
 		Handler:           mux,
 		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 
 	return srv
+}
+
+// HTTPServer returns the underlying http.Server for testing timeout configuration.
+func (s *Server) HTTPServer() *http.Server {
+	return s.httpServer
 }
 
 // ServeHTTP delegates to the internal mux so the server can be used with httptest.

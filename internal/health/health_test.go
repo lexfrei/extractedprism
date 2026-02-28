@@ -101,6 +101,19 @@ func TestUnknownPathReturns404(t *testing.T) {
 	}
 }
 
+func TestNewServer_SetsAllTimeouts(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	httpSrv := srv.HTTPServer()
+	assert.NotZero(t, httpSrv.ReadHeaderTimeout, "ReadHeaderTimeout must be set")
+	assert.NotZero(t, httpSrv.ReadTimeout, "ReadTimeout must be set")
+	assert.NotZero(t, httpSrv.WriteTimeout, "WriteTimeout must be set")
+	assert.NotZero(t, httpSrv.IdleTimeout, "IdleTimeout must be set")
+	assert.Greater(t, httpSrv.ReadTimeout, httpSrv.ReadHeaderTimeout,
+		"ReadTimeout must be greater than ReadHeaderTimeout")
+}
+
 func TestShutdown(t *testing.T) {
 	checker := &mockChecker{healthy: true}
 	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
