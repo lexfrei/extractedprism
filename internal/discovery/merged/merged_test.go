@@ -721,6 +721,83 @@ cleaned:
 	}
 }
 
+func TestRun_EmptySliceUpdateDeletesMapEntry(t *testing.T) {
+	// Same as TestRun_NilUpdateDeletesMapEntry but the clearing provider
+	// sends []string{} (empty non-nil) instead of nil. Both must trigger
+	// map entry deletion per applyUpdate semantics.
+	log := zaptest.NewLogger(t)
+
+	trigger := make(chan struct{})
+
+	clearingProv := &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			ch <- []string{"10.0.0.99:6443"}
+
+			select {
+			case <-trigger:
+				ch <- []string{}
+			case <-ctx.Done():
+				return nil
+			}
+
+			<-ctx.Done()
+
+			return nil
+		},
+	}
+
+	stableProv := newImmediateProvider([]string{"10.0.0.1:6443"})
+
+	mp := merged.NewMergedProvider(log, clearingProv, stableProv)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Wait for combined state.
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 2 {
+				goto combined
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for combined endpoints")
+		}
+	}
+
+combined:
+	close(trigger)
+
+	deadline = time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 1 && got[0] == stableEndpoint {
+				goto cleaned
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for empty-slice entry cleanup")
+		}
+	}
+
+cleaned:
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
 // --- Tests: backpressure cascade prevention ---
 
 func TestRun_BackpressureDoesNotBlockProviders(t *testing.T) {

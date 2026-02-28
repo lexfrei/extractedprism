@@ -191,7 +191,7 @@ func (mp *Provider) mergeLoop(
 		merged := mergeAndDedup(latest)
 
 		if len(merged) == 0 {
-			mp.logger.Error("merged endpoint list is empty, skipping send")
+			mp.logger.Warn("merged endpoint list is empty, skipping send")
 
 			continue
 		}
@@ -225,7 +225,7 @@ func (mp *Provider) sendWithDrain(
 
 			merged = mergeAndDedup(latest)
 			if len(merged) == 0 {
-				mp.logger.Error("merged endpoint list is empty, skipping send")
+				mp.logger.Warn("merged endpoint list is empty, skipping send")
 
 				return true
 			}
