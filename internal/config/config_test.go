@@ -67,7 +67,7 @@ func TestValidate_InvalidEndpoint(t *testing.T) {
 }
 
 func TestValidate_InvalidEndpoint_ErrorFormat(t *testing.T) {
-	cfg := config.NewDefault()
+	cfg := config.NewBaseConfig()
 	cfg.Endpoints = []string{"10.0.0.1"}
 
 	err := cfg.Validate()
@@ -78,7 +78,7 @@ func TestValidate_InvalidEndpoint_ErrorFormat(t *testing.T) {
 }
 
 func TestValidate_InvalidEndpointPort_ErrorFormat(t *testing.T) {
-	cfg := config.NewDefault()
+	cfg := config.NewBaseConfig()
 	cfg.Endpoints = []string{"10.0.0.1:abc"}
 
 	err := cfg.Validate()
