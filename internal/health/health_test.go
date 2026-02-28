@@ -151,64 +151,79 @@ func TestReadyz_ContentType(t *testing.T) {
 	}
 }
 
-func TestHealthz_MethodNotAllowed(t *testing.T) {
+func TestMethodNotAllowed(t *testing.T) {
 	checker := &mockChecker{healthy: true}
 	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
 
+	paths := []string{"/healthz", "/readyz"}
 	methods := []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch}
-	for _, method := range methods {
-		t.Run(method, func(t *testing.T) {
-			req := httptest.NewRequest(method, "/healthz", nil)
+
+	for _, path := range paths {
+		for _, method := range methods {
+			t.Run(path+"/"+method, func(t *testing.T) {
+				req := httptest.NewRequest(method, path, nil)
+				rec := httptest.NewRecorder()
+
+				srv.ServeHTTP(rec, req)
+
+				assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+				assert.Equal(t, "GET, HEAD", rec.Header().Get("Allow"))
+				assert.Contains(t, rec.Body.String(), "method not allowed")
+			})
+		}
+	}
+}
+
+func TestOptions_Returns204WithAllow(t *testing.T) {
+	checker := &mockChecker{healthy: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
+
+	paths := []string{"/healthz", "/readyz"}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodOptions, path, nil)
 			rec := httptest.NewRecorder()
 
 			srv.ServeHTTP(rec, req)
 
-			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+			assert.Equal(t, http.StatusNoContent, rec.Code)
 			assert.Equal(t, "GET, HEAD", rec.Header().Get("Allow"))
+			assert.Empty(t, rec.Body.String())
 		})
 	}
 }
 
-func TestReadyz_MethodNotAllowed(t *testing.T) {
+func TestHead_Returns200(t *testing.T) {
 	checker := &mockChecker{healthy: true}
 	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
 
-	methods := []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch}
-	for _, method := range methods {
-		t.Run(method, func(t *testing.T) {
-			req := httptest.NewRequest(method, "/readyz", nil)
-			rec := httptest.NewRecorder()
+	// Use httptest.Server for real HTTP round-trip so net/http
+	// suppresses body for HEAD requests per RFC 9110.
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
 
-			srv.ServeHTTP(rec, req)
+	paths := []string{"/healthz", "/readyz"}
 
-			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
-			assert.Equal(t, "GET, HEAD", rec.Header().Get("Allow"))
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			reqCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodHead, ts.URL+path, nil)
+			require.NoError(t, err)
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			assert.Empty(t, body, "HEAD response must have no body")
 		})
 	}
-}
-
-func TestHealthz_HeadReturns200(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
-
-	req := httptest.NewRequest(http.MethodHead, "/healthz", nil)
-	rec := httptest.NewRecorder()
-
-	srv.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-func TestReadyz_HeadReturns200(t *testing.T) {
-	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
-
-	req := httptest.NewRequest(http.MethodHead, "/readyz", nil)
-	rec := httptest.NewRecorder()
-
-	srv.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestUnknownPathReturns404(t *testing.T) {
@@ -293,16 +308,16 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestStart_AcceptsContext(t *testing.T) {
-	// Verify Start passes the context to Listen by using an
-	// unresolvable host with a short deadline. If the context
-	// is respected, Listen returns quickly with a deadline error
-	// instead of hanging.
+	// Verify Start passes the context to Listen. Bind to a non-routable
+	// IP (RFC 5737 TEST-NET-1) where the TCP connect will hang until the
+	// context deadline fires. If Start ignores the context, the test
+	// will hang instead of completing quickly.
 	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("invalid.test.invalid", 0, checker, newTestLogger())
+	srv := health.NewServer("192.0.2.1", 1, checker, newTestLogger())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	err := srv.Start(ctx)
-	require.Error(t, err, "Start with unresolvable host and short deadline must fail")
+	require.Error(t, err, "Start with non-routable IP and short deadline must fail")
 }

@@ -42,8 +42,8 @@ func NewServer(bindAddress string, port int, checker Checker, logger *zap.Logger
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", srv.handleHealthz)
-	mux.HandleFunc("/readyz", srv.handleReadyz)
+	mux.HandleFunc("/healthz", allowReadOnly(srv.handleHealthz))
+	mux.HandleFunc("/readyz", allowReadOnly(srv.handleReadyz))
 
 	srv.httpServer = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", bindAddress, port),
@@ -117,27 +117,32 @@ func (s *Server) Addr() string {
 	return lis.Addr().String()
 }
 
-func (s *Server) handleHealthz(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet && req.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+const allowedMethods = "GET, HEAD"
 
-		return
+// allowReadOnly wraps a handler to reject methods other than GET, HEAD,
+// and OPTIONS. OPTIONS returns 204 with an Allow header per RFC 9110.
+func allowReadOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodGet, http.MethodHead:
+			next(w, req)
+		case http.MethodOptions:
+			w.Header().Set("Allow", allowedMethods)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.Header().Set("Allow", allowedMethods)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	}
+}
 
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "ok\n")
 }
 
-func (s *Server) handleReadyz(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet && req.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-
-		return
-	}
-
+func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	healthy, err := s.checker.Healthy()
