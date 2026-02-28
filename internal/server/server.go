@@ -150,6 +150,11 @@ func (srv *Server) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Seed the LB with static endpoints before starting discovery.
+	// This ensures the kube discovery client (which routes through the LB)
+	// has at least one reachable backend on its first API call.
+	srv.upstreamCh <- srv.cfg.Endpoints
+
 	grp, ctx := errgroup.WithContext(ctx)
 
 	grp.Go(func() error { return srv.runDiscovery(ctx) })
