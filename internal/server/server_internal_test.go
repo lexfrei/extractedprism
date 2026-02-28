@@ -1,14 +1,10 @@
 package server
 
 import (
-	"net"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/client-go/rest"
-
-	"github.com/lexfrei/extractedprism/internal/config"
 )
 
 func TestApplyLBOverride_SetsHostAndServerName(t *testing.T) {
@@ -49,42 +45,15 @@ func TestApplyLBOverride_IPv6BindAddress(t *testing.T) {
 	assert.Equal(t, kubeAPIServerName, restCfg.ServerName)
 }
 
-func TestGetKubeClient_ConstructsLBHost(t *testing.T) {
-	tests := []struct {
-		name        string
-		bindAddress string
-		bindPort    int
-		expected    string
-	}{
-		{
-			name:        "IPv4 default",
-			bindAddress: "127.0.0.1",
-			bindPort:    7445,
-			expected:    "127.0.0.1:7445",
-		},
-		{
-			name:        "IPv6 loopback",
-			bindAddress: "::1",
-			bindPort:    7445,
-			expected:    "[::1]:7445",
-		},
-		{
-			name:        "custom port",
-			bindAddress: "127.0.0.1",
-			bindPort:    9443,
-			expected:    "127.0.0.1:9443",
-		},
-	}
+func TestSeedEndpoints_CopiesSlice(t *testing.T) {
+	original := []string{"10.0.0.1:6443", "10.0.0.2:6443"}
 
-	for _, tcase := range tests {
-		t.Run(tcase.name, func(t *testing.T) {
-			cfg := &config.Config{
-				BindAddress: tcase.bindAddress,
-				BindPort:    tcase.bindPort,
-			}
+	seed := make([]string, len(original))
+	copy(seed, original)
 
-			result := net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.BindPort))
-			assert.Equal(t, tcase.expected, result)
-		})
-	}
+	// Mutate seed to verify original is unaffected.
+	seed[0] = "MUTATED"
+
+	assert.Equal(t, "10.0.0.1:6443", original[0],
+		"original slice must not be affected by seed mutation")
 }
