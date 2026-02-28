@@ -203,6 +203,18 @@ func TestValidate_ValidBindAddress(t *testing.T) {
 	}
 }
 
+func TestValidate_BindAddressSyntacticOnly(t *testing.T) {
+	// Validation checks syntactic correctness only, not DNS resolution.
+	// Non-resolvable but syntactically valid hostnames pass validation.
+	// This is intentional: DNS may be unavailable during early boot.
+	cfg := config.NewDefault()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.BindAddress = "this-host-does-not-exist.invalid"
+
+	err := cfg.Validate()
+	require.NoError(t, err)
+}
+
 func TestValidate_PortConflict(t *testing.T) {
 	cfg := config.NewDefault()
 	cfg.Endpoints = []string{"10.0.0.1:6443"}

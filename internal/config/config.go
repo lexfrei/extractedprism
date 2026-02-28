@@ -85,6 +85,10 @@ func (cfg *Config) Validate() error {
 	return nil
 }
 
+// validateBindAddress checks that addr is a valid IP address or a syntactically
+// valid hostname per RFC 1123. DNS resolution is intentionally not performed
+// here because it would introduce a startup dependency on DNS infrastructure,
+// which may not be available in early boot (e.g., before CNI starts).
 func validateBindAddress(addr string) error {
 	if addr == "" {
 		return errors.Wrap(ErrInvalidBindAddress, "must not be empty")
