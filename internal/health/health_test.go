@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/lexfrei/extractedprism/internal/health"
 )
@@ -68,10 +69,10 @@ func TestReadyz_UnhealthyReturns503(t *testing.T) {
 	assert.Equal(t, "not ready: health check failed\n", rec.Body.String())
 }
 
-func TestReadyz_ErrorReturns503(t *testing.T) {
+func TestReadyz_ErrorReturns503WithGenericMessage(t *testing.T) {
 	checker := &mockChecker{
 		healthy: false,
-		err:     errors.New("connection refused"),
+		err:     errors.New("dial tcp 10.0.0.1:6443: connection refused"),
 	}
 	srv := health.NewServer("127.0.0.1", 0, checker, newTestLogger())
 
@@ -81,7 +82,35 @@ func TestReadyz_ErrorReturns503(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	assert.Equal(t, "not ready: connection refused\n", rec.Body.String())
+	assert.Equal(t, "not ready\n", rec.Body.String())
+	assert.NotContains(t, rec.Body.String(), "10.0.0.1",
+		"response must not leak internal IP addresses")
+	assert.NotContains(t, rec.Body.String(), "connection refused",
+		"response must not leak internal error details")
+}
+
+func TestReadyz_ErrorLogsDetails(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	internalErr := errors.New("dial tcp 10.0.0.1:6443: connection refused")
+	checker := &mockChecker{healthy: false, err: internalErr}
+	srv := health.NewServer("127.0.0.1", 0, checker, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	require.Equal(t, 1, logs.Len(), "expected exactly one log entry")
+
+	entry := logs.All()[0]
+	assert.Equal(t, zap.WarnLevel, entry.Level)
+	assert.Equal(t, "readiness check failed", entry.Message)
+
+	errField := entry.ContextMap()["error"]
+	assert.Contains(t, errField, "connection refused",
+		"full error must be logged for debugging")
 }
 
 func TestUnknownPathReturns404(t *testing.T) {
