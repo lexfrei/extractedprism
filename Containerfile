@@ -21,6 +21,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # scratch is a built-in empty pseudo-image with no OCI manifest or digest to pin.
 FROM scratch
 
+LABEL org.opencontainers.image.source="https://github.com/lexfrei/extractedprism" \
+      org.opencontainers.image.title="extractedprism" \
+      org.opencontainers.image.description="Per-node TCP load balancer for Kubernetes API server high availability" \
+      org.opencontainers.image.licenses="BSD-3-Clause"
+
 COPY --from=builder /tmp/passwd /etc/passwd
 COPY --from=builder --chmod=555 /build/extractedprism /extractedprism
 
