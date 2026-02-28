@@ -93,12 +93,25 @@ func WithLivenessConfig(interval, threshold time.Duration) Option {
 	}
 }
 
+// WithDiscoveryProviders overrides the discovery providers used by the server.
+// Intended for testing the discovery pipeline exit path.
+func WithDiscoveryProviders(providers ...discovery.EndpointProvider) Option {
+	return func(srv *Server) {
+		srv.testProviders = providers
+	}
+}
+
 // WithLivenessProbe overrides the function the heartbeat goroutine uses to
 // probe system health. The default probes the load balancer. Intended for
 // testing deadlock detection with a blocking probe.
-func WithLivenessProbe(fn func()) Option {
+// Panics if probe is nil.
+func WithLivenessProbe(probe func()) Option {
+	if probe == nil {
+		panic("WithLivenessProbe: probe must not be nil")
+	}
+
 	return func(srv *Server) {
-		srv.probeFn = fn
+		srv.probeFn = probe
 	}
 }
 
@@ -119,6 +132,9 @@ type Server struct {
 	heartbeatInterval time.Duration
 	livenessThreshold time.Duration
 	probeFn           func()
+
+	// testProviders overrides the discovery providers when set (testing only).
+	testProviders []discovery.EndpointProvider
 
 	// discoveryDone is set when runDiscovery exits. During normal
 	// operation this goroutine should run for the entire server lifetime.
@@ -222,6 +238,9 @@ func (srv *Server) Healthy() (bool, error) {
 func (srv *Server) Run(ctx context.Context) error {
 	defer srv.lastHeartbeat.Store(0)
 
+	// Reset discoveryDone so Run can be called again after a previous Run returns.
+	srv.discoveryDone.Store(false)
+
 	// Mark alive before launching goroutines so the health server
 	// never sees lastHeartbeat == 0 during normal startup.
 	srv.lastHeartbeat.Store(time.Now().UnixNano())
@@ -307,9 +326,17 @@ func (srv *Server) probeWithContext(ctx context.Context) bool {
 }
 
 func (srv *Server) runDiscovery(ctx context.Context) error {
-	providers, err := srv.buildProviders()
-	if err != nil {
-		return err
+	var providers []discovery.EndpointProvider
+
+	if srv.testProviders != nil {
+		providers = srv.testProviders
+	} else {
+		built, err := srv.buildProviders()
+		if err != nil {
+			return err
+		}
+
+		providers = built
 	}
 
 	mp := merged.NewMergedProvider(srv.logger, providers...)

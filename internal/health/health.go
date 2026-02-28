@@ -158,6 +158,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	if !s.liveness.Alive() {
+		s.logger.Warn("liveness check failed")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, "not alive\n")
 

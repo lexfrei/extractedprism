@@ -17,8 +17,20 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/lexfrei/extractedprism/internal/config"
+	"github.com/lexfrei/extractedprism/internal/discovery"
 	"github.com/lexfrei/extractedprism/internal/server"
 )
+
+// immediateProvider returns nil from Run immediately, causing the merged
+// provider to exit. Used to test the discoveryDone path in Alive().
+type immediateProvider struct{}
+
+func (immediateProvider) Run(_ context.Context, _ chan<- []string) error {
+	return nil
+}
+
+// Compile-time check.
+var _ discovery.EndpointProvider = immediateProvider{}
 
 const (
 	waitTimeout = 5 * time.Second
@@ -451,6 +463,46 @@ func TestWithLivenessConfig_NegativeThreshold_Panics(t *testing.T) {
 	assert.Panics(t, func() {
 		server.WithLivenessConfig(time.Second, -1*time.Second)
 	}, "negative threshold must panic")
+}
+
+func TestWithLivenessProbe_Nil_Panics(t *testing.T) {
+	assert.Panics(t, func() {
+		server.WithLivenessProbe(nil)
+	}, "nil probe function must panic")
+}
+
+func TestAlive_FalseWhenDiscoveryExits(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	srv, err := server.New(cfg, log,
+		server.WithLivenessConfig(50*time.Millisecond, 5*time.Second),
+		server.WithDiscoveryProviders(immediateProvider{}),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	// The immediate provider returns nil right away, causing runDiscovery
+	// to exit and discoveryDone to be set. Alive() must return false.
+	require.Eventually(t, func() bool {
+		return !srv.Alive()
+	}, 2*time.Second, 25*time.Millisecond,
+		"Alive must become false when discovery pipeline exits")
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for shutdown")
+	}
 }
 
 func TestRun_DiscoveryFallbackWithoutCluster(t *testing.T) {

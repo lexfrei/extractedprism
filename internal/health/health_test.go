@@ -71,6 +71,40 @@ func TestHealthz_NotAlive_Returns503(t *testing.T) {
 	assert.Equal(t, "not alive\n", rec.Body.String())
 }
 
+func TestHealthz_NotAlive_LogsWarning(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	checker := &mockChecker{healthy: true, alive: false}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	require.Equal(t, 1, logs.Len(), "expected exactly one log entry")
+
+	entry := logs.All()[0]
+	assert.Equal(t, zap.WarnLevel, entry.Level)
+	assert.Equal(t, "liveness check failed", entry.Message)
+}
+
+func TestHealthz_Alive_NoWarningLog(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	checker := &mockChecker{healthy: true, alive: true}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, 0, logs.Len(), "no warning should be logged when alive")
+}
+
 func TestHealthz_UsesSeparateLivenessChecker(t *testing.T) {
 	checker := &mockChecker{healthy: true, alive: true}
 	liveness := &mockLiveness{alive: false}
