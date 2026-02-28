@@ -872,6 +872,72 @@ func TestRun_WatchUpdateFiltersNotReady(t *testing.T) {
 	waitForRun(t, errCh)
 }
 
+func TestRun_BookmarkUpdatesResourceVersion(t *testing.T) {
+	// Bookmark events should update the resource version so the next
+	// watch reconnect uses the bookmarked version instead of stale one.
+	initial := makeEndpointSlice("10.0.0.1")
+	initial.ResourceVersion = "100"
+	client := fake.NewClientset(initial)
+
+	firstWatcher := watch.NewFake()
+	secondWatcher := watch.NewFake()
+
+	var watchCount atomic.Int32
+
+	var capturedVersion atomic.Value
+
+	client.PrependWatchReactor("endpointslices",
+		func(action k8stesting.Action) (bool, watch.Interface, error) {
+			watchAction, ok := action.(k8stesting.WatchAction)
+			if ok {
+				capturedVersion.Store(watchAction.GetWatchRestrictions().ResourceVersion)
+			}
+
+			if watchCount.Add(1) == 1 {
+				return true, firstWatcher, nil
+			}
+
+			return true, secondWatcher, nil
+		},
+	)
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	receiveEndpoints(t, updateCh)
+
+	// Send a Bookmark event with a newer resource version.
+	bookmark := makeEndpointSlice("10.0.0.1")
+	bookmark.ResourceVersion = "500"
+	firstWatcher.Action(watch.Bookmark, bookmark)
+
+	// Close the first watcher to force reconnect.
+	firstWatcher.Stop()
+
+	// Wait for reconnect (backoff ~1-1.25s for attempt 1).
+	require.Eventually(t, func() bool {
+		return watchCount.Load() >= 2
+	}, receiveTimeout, 10*time.Millisecond, "expected second watch to start")
+
+	// Verify that the second watch used the bookmarked resource version.
+	ver, ok := capturedVersion.Load().(string)
+	require.True(t, ok, "captured version should be a string")
+	assert.Equal(t, "500", ver,
+		"reconnected watch should use bookmarked resource version")
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
 // --- Tests: watch error should preserve status details ---
 
 func TestRun_WatchErrorIncludesStatusDetails(t *testing.T) {

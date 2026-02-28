@@ -242,6 +242,10 @@ func (p *Provider) processEvent(
 	case watch.Deleted:
 		return p.handleSliceDelete(ctx, event, updateCh, resVer)
 	case watch.Error:
+		if event.Object == nil {
+			return errors.New("watch error event received")
+		}
+
 		status, ok := event.Object.(*metav1.Status)
 		if ok && status.Code == 410 {
 			return errGone
