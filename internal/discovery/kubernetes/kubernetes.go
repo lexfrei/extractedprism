@@ -91,7 +91,12 @@ func (p *Provider) watchLoop(
 
 	for ctx.Err() == nil {
 		watchErr := p.watchOnce(ctx, updateCh, &resVer)
-		if watchErr == nil || ctx.Err() != nil {
+
+		if ctx.Err() != nil {
+			return nil //nolint:nilerr // context cancellation is graceful exit, watchErr is irrelevant
+		}
+
+		if watchErr == nil {
 			attempt = 0
 
 			continue
@@ -102,27 +107,14 @@ func (p *Provider) watchLoop(
 			zap.Error(watchErr), zap.Int("attempt", attempt))
 
 		if errors.Is(watchErr, errGone) {
-			p.logger.Info("resource version expired, performing full re-list")
-
-			oldSlices := p.knownSlices
-			p.knownSlices = make(map[string][]discoveryv1.Endpoint)
-
-			endpoints, newVer, listErr := p.listEndpoints(ctx)
-			if listErr != nil {
-				p.logger.Warn("re-list failed, retaining cached endpoints", zap.Error(listErr))
-				p.knownSlices = oldSlices
-			} else {
-				resVer = newVer
-
-				select {
-				case updateCh <- endpoints:
-				case <-ctx.Done():
-					return nil
-				}
-
+			if p.handleGoneRelist(ctx, updateCh, &resVer) {
 				attempt = 0
 
 				continue
+			}
+
+			if ctx.Err() != nil {
+				return nil //nolint:nilerr // context cancellation is graceful exit, watchErr is irrelevant
 			}
 		}
 
@@ -139,6 +131,36 @@ func (p *Provider) watchLoop(
 	}
 
 	return nil
+}
+
+// handleGoneRelist performs a full re-list when Watch returns 410 Gone.
+// Returns true if re-list succeeded and the caller should reset the attempt counter.
+func (p *Provider) handleGoneRelist(
+	ctx context.Context,
+	updateCh chan<- []string,
+	resVer *string,
+) bool {
+	p.logger.Info("resource version expired, performing full re-list")
+
+	oldSlices := p.knownSlices
+	p.knownSlices = make(map[string][]discoveryv1.Endpoint)
+
+	endpoints, newVer, listErr := p.listEndpoints(ctx)
+	if listErr != nil {
+		p.logger.Warn("re-list failed, retaining cached endpoints", zap.Error(listErr))
+		p.knownSlices = oldSlices
+
+		return false
+	}
+
+	*resVer = newVer
+
+	select {
+	case updateCh <- endpoints:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 var errGone = errors.New("watch 410 Gone")

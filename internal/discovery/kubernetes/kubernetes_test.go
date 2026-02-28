@@ -2,6 +2,8 @@ package kubernetes_test
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -21,6 +24,8 @@ const (
 	testTimeout    = 10 * time.Second
 	receiveTimeout = 5 * time.Second
 )
+
+var errSimulatedListFailure = errors.New("simulated list failure")
 
 func newTestLogger() *zap.Logger {
 	return zap.NewNop()
@@ -605,6 +610,205 @@ func TestRun_AllEndpointsNotReady(t *testing.T) {
 
 	endpoints := receiveEndpoints(t, updateCh)
 	assert.Empty(t, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestRun_ContextCancelDuringWatchExitsImmediately(t *testing.T) {
+	// Verifies that when context is cancelled while a watch is active,
+	// watchLoop exits via the explicit ctx.Err() check after watchOnce returns.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints.
+	receiveEndpoints(t, updateCh)
+
+	// Process one event to confirm watch is active and processing.
+	updated := makeEndpointSlice("10.0.0.1", "10.0.0.2")
+	updated.ResourceVersion = "2"
+	fakeWatcher.Modify(updated)
+	receiveEndpoints(t, updateCh)
+
+	// Cancel context while watch is active.
+	cancel()
+
+	// Run must return nil promptly (no backoff or extra iteration).
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(receiveTimeout):
+		t.Fatal("timed out waiting for Run to exit after context cancel")
+	}
+}
+
+func TestRun_410GoneRelistFailureRetainsCache(t *testing.T) {
+	// When 410 Gone triggers re-list and the re-list fails,
+	// the provider must retain cached endpoints and enter backoff.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	// Make the second List call fail to simulate re-list failure.
+	var listCount atomic.Int32
+	client.PrependReactor("list", "endpointslices",
+		func(_ k8stesting.Action) (bool, runtime.Object, error) {
+			if listCount.Add(1) > 1 {
+				return true, nil, errSimulatedListFailure
+			}
+
+			return false, nil, nil
+		},
+	)
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints from successful first List.
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
+
+	// Inject 410 Gone to trigger re-list.
+	fakeWatcher.Error(&metav1.Status{
+		Status: metav1.StatusFailure,
+		Code:   410,
+		Reason: metav1.StatusReasonGone,
+	})
+
+	// Re-list will fail. Provider should retain cached endpoints and enter backoff.
+	// No new endpoint update should be emitted.
+	time.Sleep(500 * time.Millisecond)
+
+	select {
+	case eps := <-updateCh:
+		t.Fatalf("unexpected endpoint update after re-list failure: %v", eps)
+	default:
+		// Expected: no update sent because re-list failed.
+	}
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestRun_410GoneContextCancelDuringSend(t *testing.T) {
+	// When 410 Gone triggers a successful re-list but the context is cancelled
+	// while sending the update, handleGoneRelist returns false and watchLoop exits.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Use an unbuffered channel so the send in handleGoneRelist blocks.
+	updateCh := make(chan []string)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Receive the initial endpoints (unblocks the initial send).
+	receiveEndpoints(t, updateCh)
+
+	// Inject 410 Gone. The re-list will succeed, but the send will block
+	// because updateCh is unbuffered and nobody is reading.
+	fakeWatcher.Error(&metav1.Status{
+		Status: metav1.StatusFailure,
+		Code:   410,
+		Reason: metav1.StatusReasonGone,
+	})
+
+	// Give the provider time to process the 410 and attempt the re-list send.
+	time.Sleep(200 * time.Millisecond)
+
+	// Cancel context while handleGoneRelist is blocked on the send.
+	cancel()
+
+	// Run must return nil.
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(receiveTimeout):
+		t.Fatal("timed out waiting for Run to exit after context cancel during 410 re-list send")
+	}
+}
+
+func TestRun_WatchReconnectContinuesProcessing(t *testing.T) {
+	// After a watch error, the loop reconnects and continues processing events.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	firstWatcher := watch.NewFake()
+	secondWatcher := watch.NewFake()
+
+	var watchCount atomic.Int32
+	client.PrependWatchReactor("endpointslices",
+		func(_ k8stesting.Action) (bool, watch.Interface, error) {
+			if watchCount.Add(1) == 1 {
+				return true, firstWatcher, nil
+			}
+
+			return true, secondWatcher, nil
+		},
+	)
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints.
+	receiveEndpoints(t, updateCh)
+
+	// Close first watcher to trigger reconnect with backoff.
+	firstWatcher.Stop()
+
+	// Wait for backoff (~1-1.25s for attempt 1) and reconnect.
+	time.Sleep(2 * time.Second)
+
+	// Inject event on second watcher.
+	updated := makeEndpointSlice("10.0.0.1", "10.0.0.2")
+	updated.ResourceVersion = "2"
+	secondWatcher.Modify(updated)
+
+	// Should receive updated endpoints through the reconnected watch.
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints)
 
 	cancel()
 	waitForRun(t, errCh)
