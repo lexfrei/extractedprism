@@ -30,6 +30,12 @@ const (
 	defaultAPIPort  = "6443"
 )
 
+// healthServer abstracts the health HTTP server for testing.
+type healthServer interface {
+	Start() error
+	Shutdown(ctx context.Context) error
+}
+
 // Option configures a Server.
 type Option func(*Server)
 
@@ -40,12 +46,19 @@ func WithKubeClient(client kubernetes.Interface) Option {
 	}
 }
 
+// WithHealthServer injects a custom health server implementation (for testing).
+func WithHealthServer(hs healthServer) Option {
+	return func(srv *Server) {
+		srv.healthSrv = hs
+	}
+}
+
 // Server ties together the load balancer, endpoint discovery, and health checking.
 type Server struct {
 	cfg        *config.Config
 	logger     *zap.Logger
 	lbHandle   *controlplane.LoadBalancer
-	healthSrv  *health.Server
+	healthSrv  healthServer
 	upstreamCh chan []string
 	kubeClient kubernetes.Interface
 }
@@ -73,7 +86,9 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 		opt(srv)
 	}
 
-	srv.healthSrv = health.NewServer(cfg.BindAddress, cfg.HealthPort, srv, logger)
+	if srv.healthSrv == nil {
+		srv.healthSrv = health.NewServer(cfg.BindAddress, cfg.HealthPort, srv, logger)
+	}
 
 	return srv, nil
 }
@@ -234,18 +249,19 @@ func ExtractAPIPort(endpoints []string) string {
 func (srv *Server) runHealth(ctx context.Context) error {
 	errCh := make(chan error, 1)
 
-	go func() { //nolint:contextcheck // health.Server.Start does not accept context
-		startErr := srv.healthSrv.Start()
-		if startErr != nil {
-			errCh <- errors.Wrap(startErr, "health server start")
-		}
+	go func() {
+		errCh <- srv.healthSrv.Start()
 	}()
 
 	select {
 	case <-ctx.Done():
 		return srv.shutdownHealth(ctx)
 	case err := <-errCh:
-		return err
+		if err != nil {
+			return errors.Wrap(err, "health server start")
+		}
+
+		return errors.New("health server exited unexpectedly")
 	}
 }
 
