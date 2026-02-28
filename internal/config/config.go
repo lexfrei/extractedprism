@@ -24,13 +24,16 @@ const (
 
 // Sentinel errors for configuration validation.
 var (
-	ErrNoEndpoints         = errors.New("no endpoints configured")
-	ErrInvalidEndpoint     = errors.New("invalid endpoint")
-	ErrInvalidPort         = errors.New("invalid port number")
-	ErrPortConflict        = errors.New("bind port and health port must differ")
-	ErrInvalidHealthTiming = errors.New("health timeout must be less than health interval")
-	ErrInvalidBindAddress  = errors.New("invalid bind address")
+	ErrNoEndpoints           = errors.New("no endpoints configured")
+	ErrInvalidEndpoint       = errors.New("invalid endpoint")
+	ErrInvalidPort           = errors.New("invalid port number")
+	ErrPortConflict          = errors.New("bind port and health port must differ")
+	ErrInvalidHealthTiming   = errors.New("health timeout must be less than health interval")
+	ErrInvalidBindAddress    = errors.New("invalid bind address")
+	ErrInvalidHealthDuration = errors.New("invalid health duration")
 )
+
+const minHealthDuration = 1 * time.Second
 
 // Config holds all configuration for the extractedprism proxy.
 type Config struct {
@@ -76,6 +79,14 @@ func (cfg *Config) Validate() error {
 	err = validatePorts(cfg.BindPort, cfg.HealthPort)
 	if err != nil {
 		return err
+	}
+
+	if cfg.HealthInterval < minHealthDuration {
+		return errors.Wrapf(ErrInvalidHealthDuration, "health interval %s: must be at least %s", cfg.HealthInterval, minHealthDuration)
+	}
+
+	if cfg.HealthTimeout < minHealthDuration {
+		return errors.Wrapf(ErrInvalidHealthDuration, "health timeout %s: must be at least %s", cfg.HealthTimeout, minHealthDuration)
 	}
 
 	if cfg.HealthTimeout >= cfg.HealthInterval {
