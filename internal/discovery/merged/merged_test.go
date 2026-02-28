@@ -504,6 +504,10 @@ func TestRun_ZeroProvidersReturnsError(t *testing.T) {
 func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
+	// burstSize must be <= providerChBuffer (16) so the provider can queue
+	// all sends into the buffered provCh without requiring the consumer to
+	// drain updateCh concurrently. This test validates that the buffer
+	// absorbs a realistic burst (12 updates ≈ full churn of a 4-node cluster).
 	const burstSize = 12
 	burstDone := make(chan struct{})
 

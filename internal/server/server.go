@@ -34,12 +34,8 @@ const (
 	//
 	// Value 16 is a heuristic sufficient for typical clusters (3-5 control
 	// plane nodes). Under extreme churn the pipeline may still briefly block
-	// but will not lose data.
-	//
-	// Buffering was chosen over non-blocking overwrite semantics because
-	// every endpoint update matters: overwrite could silently drop
-	// intermediate states (e.g., a remove followed by an add), causing the
-	// load balancer to route to stale backends.
+	// but will not lose data -- blocking only delays delivery, it does not
+	// drop updates.
 	upstreamChBuffer = 16
 )
 

@@ -49,6 +49,9 @@ func (mp *Provider) Run(ctx context.Context, updateCh chan<- []string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Buffer at least providerChBuffer to absorb bursts, and at least
+	// len(providers) so every provider can send its initial update without
+	// blocking each other on the first cycle.
 	internalChBuf := max(providerChBuffer, len(mp.providers))
 	internalCh := make(chan providerUpdate, internalChBuf)
 
