@@ -31,9 +31,19 @@ var (
 	ErrInvalidHealthTiming   = errors.New("health timeout must be less than health interval")
 	ErrInvalidBindAddress    = errors.New("invalid bind address")
 	ErrInvalidHealthDuration = errors.New("invalid health duration")
+	ErrInvalidLogLevel       = errors.New("invalid log level")
 )
 
 const minHealthDuration = 1 * time.Second
+
+func isValidLogLevel(level string) bool {
+	switch level {
+	case "debug", "info", "warn", "error", "dpanic", "panic", "fatal":
+		return true
+	default:
+		return false
+	}
+}
 
 // Config holds all configuration for the extractedprism proxy.
 type Config struct {
@@ -95,6 +105,10 @@ func (cfg *Config) Validate() error {
 		return ErrInvalidHealthTiming
 	}
 
+	if !isValidLogLevel(cfg.LogLevel) {
+		return errors.Wrapf(ErrInvalidLogLevel, "%q: must be one of debug, info, warn, error, dpanic, panic, fatal", cfg.LogLevel)
+	}
+
 	return nil
 }
 
@@ -107,11 +121,7 @@ func validateBindAddress(addr string) error {
 		return errors.Wrap(ErrInvalidBindAddress, "must not be empty")
 	}
 
-	if net.ParseIP(addr) != nil {
-		return nil
-	}
-
-	if !isValidHostname(addr) {
+	if !isValidHost(addr) {
 		return errors.Wrapf(ErrInvalidBindAddress, "%s: must be a valid IP address or hostname", addr)
 	}
 
@@ -168,6 +178,10 @@ func validateEndpoints(endpoints []string) error {
 			return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q", endpoint)
 		}
 
+		if !isValidHost(host) {
+			return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q: invalid host", endpoint)
+		}
+
 		portNum, parseErr := strconv.Atoi(port)
 		if parseErr != nil || portNum < minPort || portNum > maxPort {
 			return errors.Wrapf(ErrInvalidEndpoint, "endpoint %q: port must be a number between 1 and 65535", endpoint)
@@ -175,6 +189,15 @@ func validateEndpoints(endpoints []string) error {
 	}
 
 	return nil
+}
+
+// isValidHost returns true if host is a valid IP address or RFC 1123 hostname.
+func isValidHost(host string) bool {
+	if net.ParseIP(host) != nil {
+		return true
+	}
+
+	return isValidHostname(host)
 }
 
 func validatePorts(bindPort, healthPort int) error {

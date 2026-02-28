@@ -136,15 +136,16 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 | `--health-interval` | `EP_HEALTH_INTERVAL` | `20s` | Interval between upstream health checks |
 | `--health-timeout` | `EP_HEALTH_TIMEOUT` | `15s` | Timeout for each upstream health check |
 | `--enable-discovery` | `EP_ENABLE_DISCOVERY` | `true` | Enable Kubernetes EndpointSlice discovery |
-| `--log-level` | `EP_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `--log-level` | `EP_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`, `dpanic`, `panic`, `fatal`) |
 
 ### Validation rules
 
 - `--bind-address` must be a valid IP address or RFC 1123-compliant hostname
-- `--endpoints` must not be empty; each entry must be a valid `host:port` pair where port is a number in the range 1-65535
+- `--endpoints` must not be empty; each entry must be a valid `host:port` pair where the host is a valid IP address or RFC 1123 hostname and port is a number in the range 1-65535
 - `--bind-port` and `--health-port` must be in the range 1-65535 and must differ
 - `--health-interval` and `--health-timeout` must be at least 1 second
 - `--health-timeout` must be less than `--health-interval`
+- `--log-level` must be one of `debug`, `info`, `warn`, `error`, `dpanic`, `panic`, `fatal`
 
 ## How it works
 

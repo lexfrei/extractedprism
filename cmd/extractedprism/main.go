@@ -54,7 +54,7 @@ func registerFlags() {
 	flags.Duration("health-interval", base.HealthInterval, "interval between health checks")
 	flags.Duration("health-timeout", base.HealthTimeout, "timeout for each health check")
 	flags.Bool("enable-discovery", base.EnableDiscovery, "enable Kubernetes endpoint discovery")
-	flags.String("log-level", base.LogLevel, "log level (debug, info, warn, error)")
+	flags.String("log-level", base.LogLevel, "log level (debug, info, warn, error, dpanic, panic, fatal)")
 }
 
 func bindEnvVars() {
@@ -82,6 +82,10 @@ func mustBindPFlag(key string, flag *pflag.Flag) {
 
 func run(_ *cobra.Command, _ []string) error {
 	cfg := buildConfig()
+
+	if err := cfg.Validate(); err != nil {
+		return errors.Wrap(err, "invalid configuration")
+	}
 
 	logger, err := buildLogger(cfg.LogLevel)
 	if err != nil {
@@ -128,6 +132,9 @@ func buildConfig() *config.Config {
 	return cfg
 }
 
+// buildLogger creates a production zap logger at the given level.
+// The level is expected to be pre-validated by cfg.Validate(); the ParseLevel
+// error check is retained as defense-in-depth.
 func buildLogger(level string) (*zap.Logger, error) {
 	zapCfg := zap.NewProductionConfig()
 	zapCfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder

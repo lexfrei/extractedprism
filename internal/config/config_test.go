@@ -334,6 +334,117 @@ func TestValidate_ValidHealthDurationBoundary(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidate_InvalidLogLevel(t *testing.T) {
+	tests := []struct {
+		name  string
+		level string
+	}{
+		{name: "arbitrary string", level: "banana"},
+		{name: "empty string", level: ""},
+		{name: "similar but wrong", level: "warning"},
+		{name: "trace not supported", level: "trace"},
+		{name: "numeric level", level: "42"},
+		{name: "uppercase INFO", level: "INFO"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewBaseConfig()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.LogLevel = tt.level
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidLogLevel))
+		})
+	}
+}
+
+func TestValidate_ValidLogLevel(t *testing.T) {
+	tests := []struct {
+		name  string
+		level string
+	}{
+		{name: "debug", level: "debug"},
+		{name: "info", level: "info"},
+		{name: "warn", level: "warn"},
+		{name: "error", level: "error"},
+		{name: "dpanic", level: "dpanic"},
+		{name: "panic", level: "panic"},
+		{name: "fatal", level: "fatal"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewBaseConfig()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.LogLevel = tt.level
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidate_InvalidLogLevel_ErrorFormat(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.LogLevel = "banana"
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, config.ErrInvalidLogLevel))
+	assert.Contains(t, err.Error(), `"banana"`,
+		"error message must include the invalid level value")
+}
+
+func TestValidate_InvalidEndpointHost(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "special characters", endpoint: "!!!:6443"},
+		{name: "leading hyphen", endpoint: "-invalid:6443"},
+		{name: "trailing hyphen", endpoint: "invalid-:6443"},
+		{name: "underscore", endpoint: "_srv:6443"},
+		{name: "space in host", endpoint: "a b:6443"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewBaseConfig()
+			cfg.Endpoints = []string{tt.endpoint}
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
+		})
+	}
+}
+
+func TestValidate_ValidEndpointHost(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "IPv4 address", endpoint: "10.0.0.1:6443"},
+		{name: "IPv6 address", endpoint: "[::1]:6443"},
+		{name: "hostname", endpoint: "my-host.example.com:6443"},
+		{name: "single label", endpoint: "apiserver:6443"},
+		{name: "localhost", endpoint: "localhost:6443"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewBaseConfig()
+			cfg.Endpoints = []string{tt.endpoint}
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestParseEndpoints(t *testing.T) {
 	tests := []struct {
 		name     string
