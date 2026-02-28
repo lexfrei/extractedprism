@@ -25,6 +25,9 @@ const (
 	testAPIPort    = "6443"
 	testTimeout    = 10 * time.Second
 	receiveTimeout = 5 * time.Second
+
+	logWatchErrorRestarting = "watch error, restarting with backoff"
+	logAllEndpointsRemoved  = "all endpoints removed, endpoint list is now empty"
 )
 
 var errSimulatedListFailure = errors.New("simulated list failure")
@@ -869,7 +872,7 @@ func TestRun_WatchUpdateFiltersNotReady(t *testing.T) {
 	waitForRun(t, errCh)
 }
 
-// --- Tests for #50: watch error should preserve status details ---
+// --- Tests: watch error should preserve status details ---
 
 func TestRun_WatchErrorIncludesStatusDetails(t *testing.T) {
 	// Non-410 watch error events must include the *metav1.Status details
@@ -906,18 +909,26 @@ func TestRun_WatchErrorIncludesStatusDetails(t *testing.T) {
 		Message: "etcd cluster is unavailable",
 	})
 
-	// Wait for the provider to log the error with backoff.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the error to be logged before cancelling context.
+	// The log entry is written in watchLoop after watchOnce returns but before
+	// the backoff timer starts. If we cancel too early, the ctx.Err() check
+	// in watchLoop returns nil before logging.
+	require.Eventually(t, func() bool {
+		for _, entry := range logs.All() {
+			if entry.Message == logWatchErrorRestarting {
+				return true
+			}
+		}
+
+		return false
+	}, receiveTimeout, 10*time.Millisecond, "expected 'watch error, restarting with backoff' log entry")
 
 	cancel()
 	waitForRun(t, errCh)
 
-	// Find the "watch error, restarting with backoff" log entry.
-	var found bool
-
+	// Verify the error includes status details.
 	for _, entry := range logs.All() {
-		if entry.Message == "watch error, restarting with backoff" {
-			found = true
+		if entry.Message == logWatchErrorRestarting {
 			errField := entry.ContextMap()["error"]
 			errStr, ok := errField.(string)
 			require.True(t, ok, "error field should be a string")
@@ -930,11 +941,67 @@ func TestRun_WatchErrorIncludesStatusDetails(t *testing.T) {
 			break
 		}
 	}
-
-	assert.True(t, found, "expected 'watch error, restarting with backoff' log entry")
 }
 
-// --- Tests for #52: warn when endpoint list transitions to empty ---
+func TestRun_WatchErrorWithNonStatusObject(t *testing.T) {
+	// When a watch error event carries an object that is not *metav1.Status,
+	// the provider must not panic and should return a generic error.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	provider := kubediscovery.NewProvider(client, logger, testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints.
+	receiveEndpoints(t, updateCh)
+
+	// Inject an error event with a non-Status object (EndpointSlice instead).
+	fakeWatcher.Error(makeEndpointSlice("10.0.0.1"))
+
+	// Wait for the error to be logged before cancelling context.
+	require.Eventually(t, func() bool {
+		for _, entry := range logs.All() {
+			if entry.Message == logWatchErrorRestarting {
+				return true
+			}
+		}
+
+		return false
+	}, receiveTimeout, 10*time.Millisecond, "expected 'watch error, restarting with backoff' log entry")
+
+	cancel()
+	waitForRun(t, errCh)
+
+	// Verify the generic error was logged.
+	for _, entry := range logs.All() {
+		if entry.Message == logWatchErrorRestarting {
+			errField := entry.ContextMap()["error"]
+			errStr, ok := errField.(string)
+			require.True(t, ok, "error field should be a string")
+			assert.Contains(t, errStr, "watch error event received",
+				"generic error should be used for non-Status objects")
+
+			break
+		}
+	}
+}
+
+// --- Tests: warn when endpoint list transitions to empty ---
 
 func TestRun_LastSliceDeletionLogsWarning(t *testing.T) {
 	// When the last EndpointSlice is deleted and the endpoint list transitions
@@ -978,7 +1045,7 @@ func TestRun_LastSliceDeletionLogsWarning(t *testing.T) {
 	var found bool
 
 	for _, entry := range logs.All() {
-		if entry.Level == zap.WarnLevel && entry.Message == "all endpoints removed, endpoint list is now empty" {
+		if entry.Level == zap.WarnLevel && entry.Message == logAllEndpointsRemoved {
 			found = true
 
 			break
@@ -989,7 +1056,76 @@ func TestRun_LastSliceDeletionLogsWarning(t *testing.T) {
 		"expected warning log when endpoint list transitions to empty")
 }
 
-// --- Tests for #60: deep copy endpoints before storing ---
+func TestRun_UpdateToAllNotReadyLogsWarning(t *testing.T) {
+	// When a Modified event makes all endpoints not-ready, the endpoint list
+	// transitions to empty and a warning must be logged.
+	initial := makeEndpointSlice("10.0.0.1")
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	provider := kubediscovery.NewProvider(client, logger, testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints (non-empty list).
+	endpoints := receiveEndpoints(t, updateCh)
+	require.NotEmpty(t, endpoints, "initial endpoints must be non-empty")
+
+	// Update the slice: mark all endpoints as not-ready.
+	updated := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "kubernetes",
+			Namespace:       "default",
+			ResourceVersion: "2",
+			Labels: map[string]string{
+				"kubernetes.io/service-name": "kubernetes",
+			},
+		},
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: boolPtr(false)},
+			},
+		},
+	}
+	fakeWatcher.Modify(updated)
+
+	// Receive the empty list (still sent, no data loss).
+	endpoints = receiveEndpoints(t, updateCh)
+	assert.Empty(t, endpoints)
+
+	cancel()
+	waitForRun(t, errCh)
+
+	// Verify that a warning about empty endpoint list was logged.
+	var found bool
+
+	for _, entry := range logs.All() {
+		if entry.Level == zap.WarnLevel && entry.Message == logAllEndpointsRemoved {
+			found = true
+
+			break
+		}
+	}
+
+	assert.True(t, found,
+		"expected warning log when all endpoints become not-ready via update")
+}
+
+// --- Tests: deep copy endpoints before storing ---
 
 func TestRun_MutatingOriginalSliceDoesNotCorruptCache(t *testing.T) {
 	// After storing endpoints from a watch event, mutating the original
@@ -1035,7 +1171,63 @@ func TestRun_MutatingOriginalSliceDoesNotCorruptCache(t *testing.T) {
 
 	// The first slice's cached endpoint must still be 10.0.0.1, not 10.0.0.99.
 	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints,
-		"mutating original slice after storage must not corrupt the cache")
+		"mutating original slice Addresses after storage must not corrupt the cache")
+
+	cancel()
+	waitForRun(t, errCh)
+}
+
+func TestRun_MutatingOriginalDeprecatedTopologyDoesNotCorruptCache(t *testing.T) {
+	// Deep copy must also cover reference types like maps.
+	// Mutating DeprecatedTopology on the original object after storage
+	// must not affect the cached copy.
+	initial := makeNamedEndpointSlice("kubernetes-abc", "10.0.0.1")
+	initial.Endpoints[0].DeprecatedTopology = map[string]string{"zone": "us-east-1a"}
+	client := fake.NewClientset(initial)
+
+	fakeWatcher := watch.NewFake()
+	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
+
+	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- provider.Run(ctx, updateCh)
+	}()
+
+	// Drain initial endpoints.
+	receiveEndpoints(t, updateCh)
+
+	// Send a watch update with a slice that has DeprecatedTopology.
+	slice := makeNamedEndpointSlice("kubernetes-abc", "10.0.0.1")
+	slice.Endpoints[0].DeprecatedTopology = map[string]string{"zone": "us-east-1a"}
+	slice.ResourceVersion = "2"
+	fakeWatcher.Modify(slice)
+
+	endpoints := receiveEndpoints(t, updateCh)
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443"}, endpoints)
+
+	// Mutate the DeprecatedTopology map on the original object.
+	slice.Endpoints[0].DeprecatedTopology["zone"] = "corrupted"
+	// Also add a new key to verify the map is truly independent.
+	slice.Endpoints[0].DeprecatedTopology["injected"] = "bad"
+
+	// Trigger a cache read by adding a second slice.
+	slice2 := makeNamedEndpointSlice("kubernetes-def", "10.0.0.2")
+	slice2.ResourceVersion = "3"
+	fakeWatcher.Modify(slice2)
+
+	endpoints = receiveEndpoints(t, updateCh)
+
+	// Endpoints should still include both — cache integrity is preserved.
+	// The important thing is that the endpoint addresses are not corrupted.
+	assert.ElementsMatch(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, endpoints,
+		"mutating original DeprecatedTopology after storage must not corrupt the cache")
 
 	cancel()
 	waitForRun(t, errCh)

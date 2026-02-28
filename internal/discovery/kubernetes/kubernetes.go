@@ -271,6 +271,10 @@ func (p *Provider) handleSliceUpdate(
 
 	extracted := p.endpointsFromCache()
 
+	if len(extracted) == 0 {
+		p.logger.Warn("all endpoints removed, endpoint list is now empty")
+	}
+
 	select {
 	case updateCh <- extracted:
 	case <-ctx.Done():
@@ -360,9 +364,7 @@ func copyEndpoints(src []discoveryv1.Endpoint) []discoveryv1.Endpoint {
 	dst := make([]discoveryv1.Endpoint, len(src))
 
 	for i := range src {
-		dst[i] = src[i]
-		dst[i].Addresses = make([]string, len(src[i].Addresses))
-		copy(dst[i].Addresses, src[i].Addresses)
+		dst[i] = *src[i].DeepCopy()
 	}
 
 	return dst
