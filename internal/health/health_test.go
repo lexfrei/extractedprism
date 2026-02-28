@@ -308,16 +308,20 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestStart_AcceptsContext(t *testing.T) {
-	// Verify Start passes the context to Listen. Bind to a non-routable
-	// IP (RFC 5737 TEST-NET-1) where the TCP connect will hang until the
-	// context deadline fires. If Start ignores the context, the test
-	// will hang instead of completing quickly.
+	// Verify Start passes the context to Listen. Use a hostname
+	// (not an IP) so Listen must perform DNS resolution, which
+	// respects context cancellation. With a pre-cancelled context
+	// the lookup returns "operation was canceled" immediately.
+	// If Start ignores the context, DNS resolution would succeed
+	// and the error would be "bind: can't assign requested address"
+	// — a different error proving the context was not used.
 	checker := &mockChecker{healthy: true}
-	srv := health.NewServer("192.0.2.1", 1, checker, newTestLogger())
+	srv := health.NewServer("localhost", 0, checker, newTestLogger())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
 	err := srv.Start(ctx)
-	require.Error(t, err, "Start with non-routable IP and short deadline must fail")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 }
