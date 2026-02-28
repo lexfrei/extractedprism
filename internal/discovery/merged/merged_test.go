@@ -877,6 +877,102 @@ done:
 	}
 }
 
+func TestRun_SendWithDrainEmptyMergeDoesNotSendEmpty(t *testing.T) {
+	// Exercise the empty-merge branch inside sendWithDrain: while the merge
+	// loop is blocked trying to deliver a valid result on an unbuffered
+	// updateCh, all providers clear their endpoints. The merged result
+	// becomes empty and must NOT be sent. The provider must stay alive.
+	log := zaptest.NewLogger(t)
+
+	clearTrigger := make(chan struct{})
+	resumeTrigger := make(chan struct{})
+
+	// Provider sends endpoints, waits for clearTrigger → sends nil,
+	// waits for resumeTrigger → sends new endpoints, then blocks.
+	prov := &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			ch <- []string{"10.0.0.1:6443"}
+
+			select {
+			case <-clearTrigger:
+			case <-ctx.Done():
+				return nil
+			}
+
+			ch <- nil
+
+			select {
+			case <-resumeTrigger:
+			case <-ctx.Done():
+				return nil
+			}
+
+			ch <- []string{"10.0.0.5:6443"}
+
+			<-ctx.Done()
+
+			return nil
+		},
+	}
+
+	mp := merged.NewMergedProvider(log, prov)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Unbuffered updateCh creates backpressure, forcing sendWithDrain path.
+	updateCh := make(chan []string)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Consume initial valid result.
+	initial := receiveWithTimeout(t, updateCh, time.Second)
+	assert.Equal(t, []string{"10.0.0.1:6443"}, initial)
+
+	// Trigger nil send while mergeLoop/sendWithDrain might be blocked.
+	close(clearTrigger)
+
+	// Give time for the nil update to propagate through internalCh.
+	time.Sleep(100 * time.Millisecond)
+
+	// Resume with new valid endpoints.
+	close(resumeTrigger)
+
+	// The next value on updateCh must be the new valid endpoints,
+	// never an empty list.
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			assert.NotEmpty(t, got, "empty endpoint list must never be sent to updateCh")
+
+			if len(got) == 1 && got[0] == "10.0.0.5:6443" {
+				goto done
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for resumed endpoints after empty merge")
+		}
+	}
+
+done:
+	// Verify provider is still alive (not terminated by empty merge).
+	select {
+	case err := <-errCh:
+		t.Fatalf("Run returned unexpectedly: %v", err)
+	default:
+	}
+
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
 func waitForCombined(t *testing.T, updateCh <-chan []string) {
 	t.Helper()
 
