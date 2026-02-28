@@ -32,7 +32,7 @@ func nextPortPair() (int, int) {
 
 func validConfig() *config.Config {
 	bindPort, healthPort := nextPortPair()
-	cfg := config.NewDefault()
+	cfg := config.NewBaseConfig()
 	cfg.BindPort = bindPort
 	cfg.HealthPort = healthPort
 	cfg.Endpoints = []string{"127.0.0.1:6443"}
@@ -53,7 +53,7 @@ func TestNew_ValidConfig(t *testing.T) {
 
 func TestNew_InvalidConfig(t *testing.T) {
 	log := zaptest.NewLogger(t)
-	cfg := config.NewDefault()
+	cfg := config.NewBaseConfig()
 	cfg.Endpoints = nil
 
 	srv, err := server.New(cfg, log)
