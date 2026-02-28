@@ -106,7 +106,7 @@ Pre-built multi-arch container images are available:
 docker pull ghcr.io/lexfrei/extractedprism:latest
 ```
 
-The image is built `FROM scratch` with only the static binary and CA certificates. No shell or other tools are included.
+The image is built `FROM scratch` with only the static binary. No shell, CA certificates, or other tools are included.
 
 ### Building from source
 
@@ -185,7 +185,7 @@ On `SIGINT` or `SIGTERM`, the server cancels its context, which stops endpoint d
 - **Non-root execution**: Runs as UID 65534 (nobody) with no privilege escalation
 - **Read-only filesystem**: Container runs with a read-only root filesystem
 - **No capabilities**: Does not require `NET_ADMIN`, `NET_RAW`, or any other Linux capabilities
-- **Scratch image**: Built `FROM scratch` -- no shell, no package manager, no tools. Contains only the static binary and CA certificates
+- **Scratch image**: Built `FROM scratch` -- no shell, no package manager, no tools. Contains only the static binary
 - **Localhost binding**: Binds to `127.0.0.1` by default, not accessible from outside the node
 - **Minimal dependencies**: Uses only well-established Go libraries; binary is statically compiled with CGO disabled
 
