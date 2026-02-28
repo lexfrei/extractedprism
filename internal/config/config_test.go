@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,52 @@ func TestValidate_InvalidEndpoint(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidEndpointPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "non-numeric port", endpoint: "10.0.0.1:abc"},
+		{name: "port zero", endpoint: "10.0.0.1:0"},
+		{name: "port too high", endpoint: "10.0.0.1:99999"},
+		{name: "negative port", endpoint: "10.0.0.1:-1"},
+		{name: "float port", endpoint: "10.0.0.1:6443.5"},
+		{name: "port 65536", endpoint: "10.0.0.1:65536"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{tt.endpoint}
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
+			assert.Contains(t, err.Error(), "port must be a number between 1 and 65535")
+		})
+	}
+}
+
+func TestValidate_EndpointPortBoundaryValid(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "minimum valid port", endpoint: "10.0.0.1:1"},
+		{name: "maximum valid port", endpoint: "10.0.0.1:65535"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{tt.endpoint}
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidate_InvalidPort(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -93,6 +140,113 @@ func TestValidate_InvalidPort(t *testing.T) {
 			err := cfg.Validate()
 			require.Error(t, err)
 			assert.True(t, errors.Is(err, config.ErrInvalidPort))
+		})
+	}
+}
+
+func TestValidate_InvalidBindAddress(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "empty string", address: ""},
+		{name: "contains spaces", address: "127.0.0 .1"},
+		{name: "contains slash", address: "host/path"},
+		{name: "contains at sign", address: "user@host"},
+		{name: "contains colon", address: "host:port"},
+		{name: "leading hyphen label", address: "-invalid.example.com"},
+		{name: "trailing hyphen label", address: "invalid-.example.com"},
+		{name: "contains underscore", address: "_srv.example.com"},
+		{name: "label too long 64 chars", address: strings.Repeat("a", 64) + ".example.com"},
+		{name: "hostname too long", address: strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 63)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.BindAddress = tt.address
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidBindAddress))
+		})
+	}
+}
+
+func TestValidate_ValidBindAddress(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "IPv4 loopback", address: "127.0.0.1"},
+		{name: "IPv4 all interfaces", address: "0.0.0.0"},
+		{name: "IPv6 loopback", address: "::1"},
+		{name: "IPv6 all interfaces", address: "::"},
+		{name: "localhost", address: "localhost"},
+		{name: "hostname with dots", address: "my-host.example.com"},
+		{name: "single label hostname", address: "myhost"},
+		{name: "FQDN with trailing dot", address: "my-host.example.com."},
+		{name: "label at max 63 chars", address: strings.Repeat("a", 63) + ".example.com"},
+		{name: "hostname at max 253 chars", address: strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 61)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.BindAddress = tt.address
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidate_BindAddressSyntacticOnly(t *testing.T) {
+	// Validation checks syntactic correctness only, not DNS resolution.
+	// Non-resolvable but syntactically valid hostnames pass validation.
+	// This is intentional: DNS may be unavailable during early boot.
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "non-resolvable hostname", address: "this-host-does-not-exist.invalid"},
+		{name: "ticket example input", address: "not-an-ip"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.BindAddress = tt.address
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidate_InvalidBindAddressErrorMessages(t *testing.T) {
+	tests := []struct {
+		name            string
+		address         string
+		expectedMessage string
+	}{
+		{name: "empty address", address: "", expectedMessage: "must not be empty"},
+		{name: "invalid chars", address: "host/path", expectedMessage: "must be a valid IP address or hostname"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.BindAddress = tt.address
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidBindAddress))
+			assert.Contains(t, err.Error(), tt.expectedMessage)
 		})
 	}
 }
