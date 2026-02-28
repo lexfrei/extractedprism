@@ -143,6 +143,59 @@ func TestValidate_InvalidPort(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidBindAddress(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "empty string", address: ""},
+		{name: "contains spaces", address: "127.0.0 .1"},
+		{name: "contains slash", address: "host/path"},
+		{name: "contains at sign", address: "user@host"},
+		{name: "contains colon", address: "host:port"},
+		{name: "leading hyphen label", address: "-invalid.example.com"},
+		{name: "trailing hyphen label", address: "invalid-.example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.BindAddress = tt.address
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidBindAddress))
+		})
+	}
+}
+
+func TestValidate_ValidBindAddress(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "IPv4 loopback", address: "127.0.0.1"},
+		{name: "IPv4 all interfaces", address: "0.0.0.0"},
+		{name: "IPv6 loopback", address: "::1"},
+		{name: "IPv6 all interfaces", address: "::"},
+		{name: "localhost", address: "localhost"},
+		{name: "hostname with dots", address: "my-host.example.com"},
+		{name: "single label hostname", address: "myhost"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewDefault()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.BindAddress = tt.address
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidate_PortConflict(t *testing.T) {
 	cfg := config.NewDefault()
 	cfg.Endpoints = []string{"10.0.0.1:6443"}
