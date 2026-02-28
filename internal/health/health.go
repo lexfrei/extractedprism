@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -40,6 +41,11 @@ type Server struct {
 
 	mu       sync.Mutex
 	listener net.Listener
+
+	// livenessLogged tracks whether a liveness failure has been logged.
+	// Used for transition-based logging: logs once on alive→dead transition,
+	// resets when liveness recovers.
+	livenessLogged atomic.Bool
 }
 
 // NewServer creates a health Server bound to the given address and port.
@@ -158,12 +164,20 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	if !s.liveness.Alive() {
-		s.logger.Warn("liveness check failed")
+		// Log only on transition (alive → dead) to avoid spamming during
+		// repeated probe failures. Resets when liveness recovers.
+		if !s.livenessLogged.Swap(true) {
+			s.logger.Warn("liveness check failed")
+		}
+
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, "not alive\n")
 
 		return
 	}
+
+	// Reset so the next transition to not-alive logs again.
+	s.livenessLogged.Store(false)
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "ok\n")

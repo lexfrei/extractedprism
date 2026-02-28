@@ -81,10 +81,17 @@ func WithHealthServer(hs healthServer) Option {
 }
 
 // WithLivenessConfig overrides the heartbeat interval and liveness threshold.
-// Both values must be positive. Panics otherwise.
+// Both values must be positive, and threshold must be greater than interval
+// to avoid false liveness failures between heartbeat ticks. For production
+// use, threshold should be at least 2x interval to account for scheduling jitter.
+// Panics on invalid values.
 func WithLivenessConfig(interval, threshold time.Duration) Option {
 	if interval <= 0 || threshold <= 0 {
 		panic("WithLivenessConfig: interval and threshold must be positive")
+	}
+
+	if threshold <= interval {
+		panic("WithLivenessConfig: threshold must be greater than interval")
 	}
 
 	return func(srv *Server) {
@@ -269,11 +276,21 @@ func (srv *Server) Run(ctx context.Context) error {
 
 	srv.upstreamCh <- seed
 
+	// Save parent context before errgroup wraps it. Used to distinguish
+	// normal shutdown (parent cancelled) from unexpected discovery exit.
+	parentCtx := ctx
 	grp, ctx := errgroup.WithContext(ctx)
 
 	grp.Go(func() error { return srv.runHeartbeat(ctx) })
 	grp.Go(func() error {
-		defer srv.discoveryDone.Store(true)
+		defer func() {
+			// Only signal discovery failure for unexpected exits, not normal
+			// context-driven shutdowns. During graceful shutdown, the parent
+			// context is cancelled and the discovery pipeline exits as expected.
+			if parentCtx.Err() == nil {
+				srv.discoveryDone.Store(true)
+			}
+		}()
 
 		return srv.runDiscovery(ctx)
 	})

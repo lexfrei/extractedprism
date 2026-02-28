@@ -61,7 +61,7 @@ main.go → server.Server
 
 **Key interface**: `discovery.EndpointProvider` — `Run(ctx, updateCh chan<- []string) error`. Providers send endpoint lists on `updateCh`; the merged provider deduplicates and forwards to the load balancer.
 
-**Dependency injection**: `server.New()` accepts `Option` funcs (`WithKubeClient`, `WithHealthServer`, `WithLivenessConfig`, `WithLivenessProbe`, `WithDiscoveryProviders`) for testing.
+**Dependency injection**: `server.New()` accepts `Option` funcs. Production options: `WithKubeClient`, `WithLivenessConfig`. Testing-only options: `WithHealthServer`, `WithLivenessProbe`, `WithDiscoveryProviders`.
 
 ## Development workflow
 

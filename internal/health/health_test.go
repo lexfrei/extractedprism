@@ -105,6 +105,62 @@ func TestHealthz_Alive_NoWarningLog(t *testing.T) {
 	assert.Equal(t, 0, logs.Len(), "no warning should be logged when alive")
 }
 
+func TestHealthz_NotAlive_LogsOnceNotOnEveryRequest(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	checker := &mockChecker{healthy: true, alive: false}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, logger)
+
+	// Send multiple requests while not alive.
+	for range 5 {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		rec := httptest.NewRecorder()
+
+		srv.ServeHTTP(rec, req)
+	}
+
+	assert.Equal(t, 1, logs.Len(),
+		"only one warning should be logged for repeated failures")
+}
+
+func TestHealthz_LogsAgainAfterRecoveryAndReFailure(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	checker := &mockChecker{healthy: true, alive: false}
+	srv := health.NewServer("127.0.0.1", 0, checker, checker, logger)
+
+	// First failure — logs warning.
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	require.Equal(t, 1, logs.Len(), "first failure should log")
+
+	// Recovery.
+	checker.alive = true
+
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec = httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, 1, logs.Len(), "recovery should not log a warning")
+
+	// Second failure — should log again (new transition).
+	checker.alive = false
+
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec = httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, 2, logs.Len(),
+		"second transition to not-alive should log a new warning")
+}
+
 func TestHealthz_UsesSeparateLivenessChecker(t *testing.T) {
 	checker := &mockChecker{healthy: true, alive: true}
 	liveness := &mockLiveness{alive: false}

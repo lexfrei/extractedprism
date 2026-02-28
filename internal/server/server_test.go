@@ -528,37 +528,16 @@ func TestWithLivenessConfig_ValidValues_Applied(t *testing.T) {
 	}
 }
 
-func TestWithLivenessConfig_ThresholdEqualsInterval(t *testing.T) {
-	log := zaptest.NewLogger(t)
-	cfg := validConfig()
+func TestWithLivenessConfig_ThresholdEqualsInterval_Panics(t *testing.T) {
+	assert.Panics(t, func() {
+		server.WithLivenessConfig(time.Second, time.Second)
+	}, "threshold equal to interval must panic")
+}
 
-	// When threshold equals interval, the server should stay alive because
-	// each heartbeat tick refreshes the timestamp just before it expires.
-	srv, err := server.New(cfg, log,
-		server.WithLivenessConfig(100*time.Millisecond, 100*time.Millisecond),
-	)
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-
-	go func() { errCh <- srv.Run(ctx) }()
-
-	waitForHealthz(t, cfg.HealthPort)
-
-	// With threshold==interval, the server may flicker depending on
-	// scheduling. Verify it does not crash and Alive returns a consistent
-	// boolean value (not panic or error).
-	_ = srv.Alive()
-
-	cancel()
-
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(waitTimeout):
-		t.Fatal("timed out waiting for shutdown")
-	}
+func TestWithLivenessConfig_ThresholdLessThanInterval_Panics(t *testing.T) {
+	assert.Panics(t, func() {
+		server.WithLivenessConfig(5*time.Second, 3*time.Second)
+	}, "threshold less than interval must panic")
 }
 
 func TestWithLivenessProbe_Nil_Panics(t *testing.T) {
