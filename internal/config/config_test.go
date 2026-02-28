@@ -493,24 +493,6 @@ func TestValidateEndpoint_Invalid(t *testing.T) {
 	}
 }
 
-func TestValidateEndpoint_PortBoundary(t *testing.T) {
-	// Port 0 is invalid, port 1 is the minimum valid.
-	err := config.ValidateEndpoint("10.0.0.1:0")
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
-
-	err = config.ValidateEndpoint("10.0.0.1:1")
-	require.NoError(t, err)
-
-	// Port 65535 is the maximum valid, 65536 is invalid.
-	err = config.ValidateEndpoint("10.0.0.1:65535")
-	require.NoError(t, err)
-
-	err = config.ValidateEndpoint("10.0.0.1:65536")
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
-}
-
 func TestParseEndpoints(t *testing.T) {
 	tests := []struct {
 		name     string

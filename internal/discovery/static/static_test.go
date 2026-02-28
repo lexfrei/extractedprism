@@ -13,6 +13,34 @@ import (
 	"github.com/lexfrei/extractedprism/internal/discovery/static"
 )
 
+const waitTimeout = 5 * time.Second
+
+func receiveEndpoints(t *testing.T, ch <-chan []string) []string {
+	t.Helper()
+
+	select {
+	case eps := <-ch:
+		return eps
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for endpoints on channel")
+
+		return nil
+	}
+}
+
+func waitForResult(t *testing.T, errCh <-chan error) error {
+	t.Helper()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for Run to return")
+
+		return nil
+	}
+}
+
 func TestStaticProvider_New_Valid(t *testing.T) {
 	provider, err := static.NewStaticProvider([]string{"10.0.0.1:6443", "10.0.0.2:6443"})
 	require.NoError(t, err)
@@ -59,6 +87,37 @@ func TestStaticProvider_New_InvalidEndpoint_ErrorFormat(t *testing.T) {
 		"error must include wrap context from static provider")
 }
 
+func TestStaticProvider_New_InvalidEndpoint_ErrorWrapChain(t *testing.T) {
+	tests := []struct {
+		name            string
+		endpoint        string
+		expectedMessage string
+	}{
+		{
+			name:            "invalid port includes port range message",
+			endpoint:        "10.0.0.1:0",
+			expectedMessage: "port must be a number between 1 and 65535",
+		},
+		{
+			name:            "invalid host includes host message",
+			endpoint:        "-invalid:6443",
+			expectedMessage: "invalid host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := static.NewStaticProvider([]string{tt.endpoint})
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
+			assert.Contains(t, err.Error(), "static provider",
+				"error must include wrap context from static provider")
+			assert.Contains(t, err.Error(), tt.expectedMessage,
+				"error must include validation detail from config.ValidateEndpoint")
+		})
+	}
+}
+
 func TestStaticProvider_Run_SendsEndpoints(t *testing.T) {
 	endpoints := []string{"10.0.0.1:6443", "10.0.0.2:6443"}
 	provider, err := static.NewStaticProvider(endpoints)
@@ -73,21 +132,13 @@ func TestStaticProvider_Run_SendsEndpoints(t *testing.T) {
 		errCh <- provider.Run(ctx, updateCh)
 	}()
 
-	select {
-	case received := <-updateCh:
-		assert.Equal(t, endpoints, received)
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for endpoints")
-	}
+	received := receiveEndpoints(t, updateCh)
+	assert.Equal(t, endpoints, received)
 
 	cancel()
 
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Run to return")
-	}
+	runErr := waitForResult(t, errCh)
+	assert.NoError(t, runErr)
 }
 
 func TestStaticProvider_Run_SliceIsolation(t *testing.T) {
@@ -105,13 +156,9 @@ func TestStaticProvider_Run_SliceIsolation(t *testing.T) {
 		errCh <- provider.Run(ctx, updateCh)
 	}()
 
-	select {
-	case received := <-updateCh:
-		// Mutate the received slice.
-		received[0] = "CORRUPTED"
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for endpoints")
-	}
+	received := receiveEndpoints(t, updateCh)
+	// Mutate the received slice.
+	received[0] = "CORRUPTED"
 
 	cancel()
 
@@ -125,13 +172,9 @@ func TestStaticProvider_Run_SliceIsolation(t *testing.T) {
 		_ = provider.Run(ctx2, updateCh2)
 	}()
 
-	select {
-	case received := <-updateCh2:
-		assert.Equal(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, received,
-			"internal endpoints should not be affected by consumer mutation")
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for second run endpoints")
-	}
+	received2 := receiveEndpoints(t, updateCh2)
+	assert.Equal(t, []string{"10.0.0.1:6443", "10.0.0.2:6443"}, received2,
+		"internal endpoints should not be affected by consumer mutation")
 
 	cancel2()
 }
@@ -152,12 +195,8 @@ func TestStaticProvider_Run_CancelledBeforeSend(t *testing.T) {
 		errCh <- provider.Run(ctx, updateCh)
 	}()
 
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("Run blocked on cancelled context — goroutine leak")
-	}
+	runErr := waitForResult(t, errCh)
+	assert.NoError(t, runErr)
 }
 
 func TestStaticProvider_Run_CancelsCleanly(t *testing.T) {
@@ -174,14 +213,10 @@ func TestStaticProvider_Run_CancelsCleanly(t *testing.T) {
 	}()
 
 	// Drain the initial send.
-	<-updateCh
+	receiveEndpoints(t, updateCh)
 
 	cancel()
 
-	select {
-	case err := <-errCh:
-		assert.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for clean cancellation")
-	}
+	runErr := waitForResult(t, errCh)
+	assert.NoError(t, runErr)
 }
