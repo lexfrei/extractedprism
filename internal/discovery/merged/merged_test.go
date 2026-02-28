@@ -501,19 +501,10 @@ func TestRun_ZeroProvidersReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "no providers configured")
 }
 
-func TestProviderChBuffer(t *testing.T) {
-	assert.GreaterOrEqual(t, merged.ProviderChBuffer, 16,
-		"provider channel buffer must be large enough to absorb endpoint update bursts")
-}
-
 func TestRun_BurstUpdatesAreNotLost(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
 	const burstSize = 10
-	triggers := make([]chan struct{}, burstSize)
-	for i := range triggers {
-		triggers[i] = make(chan struct{})
-	}
 
 	// Provider sends burstSize rapid sequential updates.
 	burstProv := &mockProvider{

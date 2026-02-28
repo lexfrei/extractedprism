@@ -30,9 +30,11 @@ const (
 	defaultAPIPort  = "6443"
 
 	// UpstreamChBuffer is the buffer size for the channel between the merged
-	// discovery provider and the load balancer. A larger buffer absorbs bursts
-	// of rapid endpoint updates so the provider does not block when the load
-	// balancer is slow to reconcile routes.
+	// discovery provider and the load balancer. Value 16 is an empirical
+	// heuristic: a typical cluster has 3-5 control plane nodes, so even a
+	// full EndpointSlice churn (add+modify+delete per slice) produces fewer
+	// than 16 updates in a burst. This prevents the provider from blocking
+	// when the load balancer is slow to reconcile routes.
 	UpstreamChBuffer = 16
 )
 

@@ -13,8 +13,9 @@ import (
 )
 
 // ProviderChBuffer is the buffer size for each sub-provider's internal channel.
-// A larger buffer allows providers to queue multiple endpoint updates without
-// blocking when the merge loop is busy processing a previous update.
+// Value 16 matches UpstreamChBuffer: the per-provider channel should absorb
+// the same burst magnitude so the cascade of buffers (provider -> merge loop
+// -> load balancer) does not create a new bottleneck at an intermediate stage.
 const ProviderChBuffer = 16
 
 // Provider merges endpoints from multiple discovery providers.
