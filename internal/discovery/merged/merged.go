@@ -175,24 +175,47 @@ func (mp *Provider) mergeLoop(
 	latest := make(map[int][]string, len(mp.providers))
 
 	for {
+		// Block until at least one update arrives.
 		select {
 		case <-ctx.Done():
 			return
 		case upd := <-internalCh:
 			latest[upd.index] = upd.endpoints
-			merged := mergeAndDedup(latest)
+		}
 
-			if len(merged) == 0 {
-				mp.logger.Error("merged endpoint list is empty, skipping send")
+		// Drain all pending updates so the merged result reflects the
+		// latest state before we attempt to send. This prevents blocking
+		// on updateCh with a stale intermediate snapshot.
+		mp.drainPending(internalCh, latest)
 
-				continue
-			}
+		merged := mergeAndDedup(latest)
 
-			select {
-			case updateCh <- merged:
-			case <-ctx.Done():
-				return
-			}
+		if len(merged) == 0 {
+			mp.logger.Error("merged endpoint list is empty, skipping send")
+
+			continue
+		}
+
+		select {
+		case updateCh <- merged:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// drainPending reads all immediately available updates from internalCh
+// into the latest map without blocking.
+func (mp *Provider) drainPending(
+	internalCh <-chan providerUpdate,
+	latest map[int][]string,
+) {
+	for {
+		select {
+		case upd := <-internalCh:
+			latest[upd.index] = upd.endpoints
+		default:
+			return
 		}
 	}
 }

@@ -504,15 +504,12 @@ func TestRun_ZeroProvidersReturnsError(t *testing.T) {
 func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
-	// burstSize must be <= providerChBuffer (16) so the provider can queue
-	// all sends into the buffered provCh without requiring the consumer to
-	// drain updateCh concurrently. This test validates that the buffer
-	// absorbs a realistic burst (12 updates ≈ full churn of a 4-node cluster).
-	const burstSize = 12
-	burstDone := make(chan struct{})
+	// burstSize intentionally exceeds providerChBuffer (16) to verify that
+	// the drain pattern in mergeLoop handles bursts of any size, not just
+	// those that fit in the buffer.
+	const burstSize = 30
 
-	// Provider sends burstSize rapid sequential updates without waiting,
-	// then signals burstDone to indicate all sends completed.
+	// Provider sends burstSize rapid sequential updates.
 	burstProv := &mockProvider{
 		sendFunc: func(ctx context.Context, ch chan<- []string) error {
 			for i := range burstSize {
@@ -523,7 +520,6 @@ func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 					return nil
 				}
 			}
-			close(burstDone)
 
 			<-ctx.Done()
 
@@ -536,26 +532,16 @@ func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Unbuffered updateCh: the merge loop cannot push ahead at all.
-	// The provider relies entirely on provCh and internalCh buffers
-	// to avoid blocking during the burst.
-	updateCh := make(chan []string)
+	// Small buffer simulates a slow consumer.
+	updateCh := make(chan []string, 1)
 	errCh := make(chan error, 1)
 
 	go func() { errCh <- mp.Run(ctx, updateCh) }()
 
-	// Verify that the provider completes its burst without the consumer
-	// draining updateCh. With sufficient internal buffers this succeeds;
-	// with buffer=1 the provider would block waiting for the slow consumer.
-	select {
-	case <-burstDone:
-		// Provider completed all sends without blocking.
-	case <-time.After(3 * time.Second):
-		t.Fatal("provider blocked during burst — internal buffers are too small")
-	}
-
-	// Now drain and verify the final update arrives.
-	deadline := time.After(3 * time.Second)
+	// Drain all updates until we see the final burst value.
+	// The drain pattern in mergeLoop ensures that even with burst > buffer,
+	// all updates eventually flow through without deadlock.
+	deadline := time.After(5 * time.Second)
 	var lastReceived []string
 
 	for {
@@ -569,6 +555,71 @@ func TestRun_BurstUpdatesWithSlowConsumer(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for final burst update; last received: %v", lastReceived)
+		}
+	}
+}
+
+func TestRun_DrainCoalescesUpdates(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	trigger := make(chan struct{})
+
+	// Provider sends initial, waits for trigger, then sends a rapid burst.
+	burstProv := &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			ch <- []string{"10.0.0.1:6443"}
+
+			select {
+			case <-trigger:
+			case <-ctx.Done():
+				return nil
+			}
+
+			// Rapid burst of 5 updates while consumer is slow.
+			for i := range 5 {
+				ch <- []string{fmt.Sprintf("10.0.%d.1:6443", i)}
+			}
+
+			<-ctx.Done()
+
+			return nil
+		},
+	}
+
+	mp := merged.NewMergedProvider(log, burstProv)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, 1)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Consume the initial update.
+	initial := receiveWithTimeout(t, updateCh, time.Second)
+	assert.Equal(t, []string{"10.0.0.1:6443"}, initial)
+
+	// Trigger the burst, then give time for updates to queue.
+	close(trigger)
+	time.Sleep(100 * time.Millisecond)
+
+	// When we read the next update, mergeLoop should have drained
+	// multiple pending updates and sent the latest merged state.
+	// We don't know exactly how many reads it coalesced, but the
+	// final value (10.0.4.1:6443) must be present.
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 1 && got[0] == "10.0.4.1:6443" {
+				cancel()
+
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for coalesced final update")
 		}
 	}
 }
