@@ -681,7 +681,8 @@ func TestRun_410GoneRelistFailureRetainsCache(t *testing.T) {
 		},
 	)
 
-	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+	core, logs := observer.New(zap.WarnLevel)
+	provider := kubediscovery.NewProvider(client, zap.New(core), testAPIPort)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -704,10 +705,12 @@ func TestRun_410GoneRelistFailureRetainsCache(t *testing.T) {
 		Reason: metav1.StatusReasonGone,
 	})
 
-	// Re-list will fail. Provider should retain cached endpoints and enter backoff.
-	// No new endpoint update should be emitted.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the re-list failure to be logged instead of using a fixed sleep.
+	require.Eventually(t, func() bool {
+		return logs.FilterMessage("re-list failed, retaining cached endpoints").Len() > 0
+	}, receiveTimeout, 10*time.Millisecond, "expected re-list failure log")
 
+	// No new endpoint update should be emitted after re-list failure.
 	select {
 	case eps := <-updateCh:
 		t.Fatalf("unexpected endpoint update after re-list failure: %v", eps)
@@ -728,7 +731,8 @@ func TestRun_410GoneContextCancelDuringSend(t *testing.T) {
 	fakeWatcher := watch.NewFake()
 	client.PrependWatchReactor("endpointslices", k8stesting.DefaultWatchReactor(fakeWatcher, nil))
 
-	provider := kubediscovery.NewProvider(client, newTestLogger(), testAPIPort)
+	core, logs := observer.New(zap.InfoLevel)
+	provider := kubediscovery.NewProvider(client, zap.New(core), testAPIPort)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -751,8 +755,11 @@ func TestRun_410GoneContextCancelDuringSend(t *testing.T) {
 		Reason: metav1.StatusReasonGone,
 	})
 
-	// Give the provider time to process the 410 and attempt the re-list send.
-	time.Sleep(200 * time.Millisecond)
+	// Wait until the provider has started the re-list (logged "resource version expired")
+	// and is now blocked trying to send on the unbuffered updateCh.
+	require.Eventually(t, func() bool {
+		return logs.FilterMessage("resource version expired, performing full re-list").Len() > 0
+	}, receiveTimeout, 10*time.Millisecond, "expected re-list log")
 
 	// Cancel context while handleGoneRelist is blocked on the send.
 	cancel()
@@ -803,8 +810,10 @@ func TestRun_WatchReconnectContinuesProcessing(t *testing.T) {
 	// Close first watcher to trigger reconnect with backoff.
 	firstWatcher.Stop()
 
-	// Wait for backoff (~1-1.25s for attempt 1) and reconnect.
-	time.Sleep(2 * time.Second)
+	// Wait for the second watch to be established instead of a fixed sleep.
+	require.Eventually(t, func() bool {
+		return watchCount.Load() >= 2
+	}, receiveTimeout, 10*time.Millisecond, "expected second watch to start")
 
 	// Inject event on second watcher.
 	updated := makeEndpointSlice("10.0.0.1", "10.0.0.2")
