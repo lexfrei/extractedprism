@@ -15,6 +15,8 @@ import (
 	"github.com/lexfrei/extractedprism/internal/discovery/merged"
 )
 
+const stableEndpoint = "10.0.0.1:6443"
+
 // mockProvider implements EndpointProvider for testing.
 type mockProvider struct {
 	sendFunc func(ctx context.Context, ch chan<- []string) error
@@ -635,6 +637,419 @@ done:
 	}
 }
 
+// --- Tests: stale map entry cleanup ---
+
+func TestRun_NilUpdateDeletesMapEntry(t *testing.T) {
+	// When a provider sends nil endpoints (e.g., after failure),
+	// the map entry must be deleted, not retained as nil.
+	// Verify by checking that after cleanup the merged result
+	// only contains data from the remaining provider.
+	log := zaptest.NewLogger(t)
+
+	trigger := make(chan struct{})
+
+	// Provider 0: sends initial, waits for trigger, then sends nil to clear.
+	clearingProv := &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			ch <- []string{"10.0.0.99:6443"}
+
+			select {
+			case <-trigger:
+				ch <- nil
+			case <-ctx.Done():
+				return nil
+			}
+
+			<-ctx.Done()
+
+			return nil
+		},
+	}
+
+	// Provider 1: stays alive with stable endpoints.
+	stableProv := newImmediateProvider([]string{"10.0.0.1:6443"})
+
+	mp := merged.NewMergedProvider(log, clearingProv, stableProv)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Wait for combined state.
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 2 {
+				goto combined
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for combined endpoints")
+		}
+	}
+
+combined:
+	// Trigger nil update from provider 0.
+	close(trigger)
+
+	// Wait for cleanup: only stable provider's endpoint should remain.
+	deadline = time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 1 && got[0] == stableEndpoint {
+				goto cleaned
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for stale entry cleanup")
+		}
+	}
+
+cleaned:
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
+func TestRun_EmptySliceUpdateDeletesMapEntry(t *testing.T) {
+	// Same as TestRun_NilUpdateDeletesMapEntry but the clearing provider
+	// sends []string{} (empty non-nil) instead of nil. Both must trigger
+	// map entry deletion per applyUpdate semantics.
+	log := zaptest.NewLogger(t)
+
+	trigger := make(chan struct{})
+
+	clearingProv := &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			ch <- []string{"10.0.0.99:6443"}
+
+			select {
+			case <-trigger:
+				ch <- []string{}
+			case <-ctx.Done():
+				return nil
+			}
+
+			<-ctx.Done()
+
+			return nil
+		},
+	}
+
+	stableProv := newImmediateProvider([]string{"10.0.0.1:6443"})
+
+	mp := merged.NewMergedProvider(log, clearingProv, stableProv)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updateCh := make(chan []string, 10)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Wait for combined state.
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 2 {
+				goto combined
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for combined endpoints")
+		}
+	}
+
+combined:
+	close(trigger)
+
+	deadline = time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 1 && got[0] == stableEndpoint {
+				goto cleaned
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for empty-slice entry cleanup")
+		}
+	}
+
+cleaned:
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
+// --- Tests: backpressure cascade prevention ---
+
+func TestRun_BackpressureDoesNotBlockProviders(t *testing.T) {
+	// When updateCh is slow (unbuffered), providers sending to internalCh
+	// must not block indefinitely. The mergeLoop should continue reading
+	// internalCh while waiting to send on updateCh.
+	log := zaptest.NewLogger(t)
+
+	allSent := make(chan struct{})
+
+	// Provider sends a burst of updates rapidly.
+	burstProv := &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			for i := range 5 {
+				select {
+				case ch <- []string{fmt.Sprintf("10.0.0.%d:6443", i+1)}:
+				case <-ctx.Done():
+					return nil
+				}
+			}
+			close(allSent)
+
+			<-ctx.Done()
+
+			return nil
+		},
+	}
+
+	mp := merged.NewMergedProvider(log, burstProv)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Unbuffered updateCh to maximize blocking.
+	updateCh := make(chan []string)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Slowly consume updates to create backpressure.
+	deadline := time.After(5 * time.Second)
+	var lastReceived []string
+
+	for {
+		select {
+		case got := <-updateCh:
+			lastReceived = got
+		case <-allSent:
+			// All updates sent by provider. Read remaining.
+			goto drain
+		case <-deadline:
+			t.Fatalf("timed out; provider blocked due to backpressure; last: %v", lastReceived)
+		}
+	}
+
+drain:
+	// Drain any remaining updates.
+	for {
+		select {
+		case got := <-updateCh:
+			lastReceived = got
+		case <-time.After(500 * time.Millisecond):
+			goto verify
+		}
+	}
+
+verify:
+	// The last received must contain the final update.
+	assert.Contains(t, lastReceived, "10.0.0.5:6443",
+		"final provider update must be reflected despite backpressure")
+
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
+func TestRun_BackpressureSendsLatestValue(t *testing.T) {
+	// While blocked on updateCh, new updates from internalCh must
+	// be incorporated. The value eventually sent should be the latest,
+	// not a stale intermediate.
+	log := zaptest.NewLogger(t)
+
+	trigger := make(chan struct{})
+
+	// Provider sends initial, waits for trigger, then sends rapid burst.
+	burstProv := &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			ch <- []string{"10.0.0.1:6443"}
+
+			select {
+			case <-trigger:
+			case <-ctx.Done():
+				return nil
+			}
+
+			// Rapid burst: each overwrites the previous.
+			for i := range 10 {
+				select {
+				case ch <- []string{fmt.Sprintf("10.0.%d.1:6443", i)}:
+				case <-ctx.Done():
+					return nil
+				}
+			}
+
+			<-ctx.Done()
+
+			return nil
+		},
+	}
+
+	mp := merged.NewMergedProvider(log, burstProv)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Buffer 1 to allow initial send, then create pressure.
+	updateCh := make(chan []string, 1)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Read initial.
+	initial := receiveWithTimeout(t, updateCh, time.Second)
+	assert.Equal(t, []string{"10.0.0.1:6443"}, initial)
+
+	// Trigger burst.
+	close(trigger)
+
+	// Drain until we see the final value (10.0.9.1:6443).
+	deadline := time.After(5 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			if len(got) == 1 && got[0] == "10.0.9.1:6443" {
+				goto done
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for final burst value")
+		}
+	}
+
+done:
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
+func TestRun_SendWithDrainEmptyMergeDoesNotSendEmpty(t *testing.T) {
+	// Exercise the empty-merge branch inside sendWithDrain: while the merge
+	// loop is blocked trying to deliver a valid result on an unbuffered
+	// updateCh, all providers clear their endpoints. The merged result
+	// becomes empty and must NOT be sent. The provider must stay alive.
+	log := zaptest.NewLogger(t)
+
+	clearTrigger := make(chan struct{})
+	resumeTrigger := make(chan struct{})
+
+	// Provider sends endpoints, waits for clearTrigger → sends nil,
+	// waits for resumeTrigger → sends new endpoints, then blocks.
+	prov := &mockProvider{
+		sendFunc: func(ctx context.Context, ch chan<- []string) error {
+			ch <- []string{"10.0.0.1:6443"}
+
+			select {
+			case <-clearTrigger:
+			case <-ctx.Done():
+				return nil
+			}
+
+			ch <- nil
+
+			select {
+			case <-resumeTrigger:
+			case <-ctx.Done():
+				return nil
+			}
+
+			ch <- []string{"10.0.0.5:6443"}
+
+			<-ctx.Done()
+
+			return nil
+		},
+	}
+
+	mp := merged.NewMergedProvider(log, prov)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Unbuffered updateCh creates backpressure, forcing sendWithDrain path.
+	updateCh := make(chan []string)
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- mp.Run(ctx, updateCh) }()
+
+	// Consume initial valid result.
+	initial := receiveWithTimeout(t, updateCh, time.Second)
+	assert.Equal(t, []string{"10.0.0.1:6443"}, initial)
+
+	// Trigger nil send while mergeLoop/sendWithDrain might be blocked.
+	close(clearTrigger)
+
+	// Give time for the nil update to propagate through internalCh.
+	time.Sleep(100 * time.Millisecond)
+
+	// Resume with new valid endpoints.
+	close(resumeTrigger)
+
+	// The next value on updateCh must be the new valid endpoints,
+	// never an empty list.
+	deadline := time.After(3 * time.Second)
+
+	for {
+		select {
+		case got := <-updateCh:
+			assert.NotEmpty(t, got, "empty endpoint list must never be sent to updateCh")
+
+			if len(got) == 1 && got[0] == "10.0.0.5:6443" {
+				goto done
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for resumed endpoints after empty merge")
+		}
+	}
+
+done:
+	// Verify provider is still alive (not terminated by empty merge).
+	select {
+	case err := <-errCh:
+		t.Fatalf("Run returned unexpectedly: %v", err)
+	default:
+	}
+
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
 func waitForCombined(t *testing.T, updateCh <-chan []string) {
 	t.Helper()
 
@@ -660,7 +1075,7 @@ func waitForCleanup(t *testing.T, updateCh <-chan []string) {
 	for {
 		select {
 		case got := <-updateCh:
-			if len(got) == 1 && got[0] == "10.0.0.1:6443" {
+			if len(got) == 1 && got[0] == stableEndpoint {
 				// Verify stale endpoints do not reappear.
 				time.Sleep(100 * time.Millisecond)
 
