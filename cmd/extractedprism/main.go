@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/cobra"
@@ -46,15 +45,16 @@ func init() {
 }
 
 func registerFlags() {
+	base := config.NewBaseConfig()
 	flags := rootCmd.PersistentFlags()
-	flags.String("bind-address", "127.0.0.1", "address to bind the LB listener")
-	flags.Int("bind-port", 7445, "port for the LB listener")
-	flags.Int("health-port", 7446, "port for the health HTTP server")
+	flags.String("bind-address", base.BindAddress, "address to bind the LB listener")
+	flags.Int("bind-port", base.BindPort, "port for the LB listener")
+	flags.Int("health-port", base.HealthPort, "port for the health HTTP server")
 	flags.String("endpoints", "", "comma-separated control plane endpoints (required)")
-	flags.Duration("health-interval", 20*time.Second, "interval between health checks")
-	flags.Duration("health-timeout", 15*time.Second, "timeout for each health check")
-	flags.Bool("enable-discovery", true, "enable Kubernetes endpoint discovery")
-	flags.String("log-level", "info", "log level (debug, info, warn, error)")
+	flags.Duration("health-interval", base.HealthInterval, "interval between health checks")
+	flags.Duration("health-timeout", base.HealthTimeout, "timeout for each health check")
+	flags.Bool("enable-discovery", base.EnableDiscovery, "enable Kubernetes endpoint discovery")
+	flags.String("log-level", base.LogLevel, "log level (debug, info, warn, error)")
 }
 
 func bindEnvVars() {
@@ -113,16 +113,17 @@ func run(_ *cobra.Command, _ []string) error {
 }
 
 func buildConfig() *config.Config {
-	return &config.Config{
-		BindAddress:     viper.GetString("bind_address"),
-		BindPort:        viper.GetInt("bind_port"),
-		HealthPort:      viper.GetInt("health_port"),
-		Endpoints:       config.ParseEndpoints(viper.GetString("endpoints")),
-		HealthInterval:  viper.GetDuration("health_interval"),
-		HealthTimeout:   viper.GetDuration("health_timeout"),
-		EnableDiscovery: viper.GetBool("enable_discovery"),
-		LogLevel:        viper.GetString("log_level"),
-	}
+	cfg := config.NewBaseConfig()
+	cfg.BindAddress = viper.GetString("bind_address")
+	cfg.BindPort = viper.GetInt("bind_port")
+	cfg.HealthPort = viper.GetInt("health_port")
+	cfg.Endpoints = config.ParseEndpoints(viper.GetString("endpoints"))
+	cfg.HealthInterval = viper.GetDuration("health_interval")
+	cfg.HealthTimeout = viper.GetDuration("health_timeout")
+	cfg.EnableDiscovery = viper.GetBool("enable_discovery")
+	cfg.LogLevel = viper.GetString("log_level")
+
+	return cfg
 }
 
 func buildLogger(level string) (*zap.Logger, error) {

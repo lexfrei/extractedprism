@@ -206,7 +206,7 @@ On `SIGINT` or `SIGTERM`, the server cancels its context, which stops endpoint d
 ```text
 cmd/extractedprism/main.go              # CLI entry point (cobra/viper), signal handling
 internal/
-├── config/config.go                    # Config struct, validation, defaults
+├── config/config.go                    # Config struct, validation, base defaults
 ├── discovery/
 │   ├── provider.go                     # EndpointProvider interface
 │   ├── static/static.go               # Static endpoints from --endpoints flag
