@@ -73,6 +73,8 @@ type Server struct {
 }
 
 // New creates a Server from the given config.
+// Config is expected to be pre-validated by the caller; the Validate call
+// here is retained as defense-in-depth for direct callers and tests.
 func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error) {
 	err := cfg.Validate()
 	if err != nil {
