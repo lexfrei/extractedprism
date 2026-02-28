@@ -119,6 +119,12 @@ type Server struct {
 	heartbeatInterval time.Duration
 	livenessThreshold time.Duration
 	probeFn           func()
+
+	// discoveryDone is set when runDiscovery exits. During normal
+	// operation this goroutine should run for the entire server lifetime.
+	// An early exit (error or unexpected nil return) indicates a critical
+	// goroutine failure.
+	discoveryDone atomic.Bool
 }
 
 // New creates a Server from the given config.
@@ -183,12 +189,19 @@ func createLoadBalancer(
 }
 
 // Alive reports whether the server's Run loop is active and responsive.
-// Returns false before Run is called, after Run returns, or when the
-// heartbeat goroutine has not updated within the liveness threshold
-// (indicating a deadlocked load balancer goroutine).
+// Returns false when:
+//   - Run has not been called yet (lastHeartbeat == 0)
+//   - Run has returned (lastHeartbeat reset to 0)
+//   - The heartbeat probe has not responded within the liveness threshold
+//     (indicating a deadlocked load balancer goroutine)
+//   - The discovery pipeline has exited unexpectedly
 func (srv *Server) Alive() bool {
 	last := srv.lastHeartbeat.Load()
 	if last == 0 {
+		return false
+	}
+
+	if srv.discoveryDone.Load() {
 		return false
 	}
 
@@ -236,7 +249,11 @@ func (srv *Server) Run(ctx context.Context) error {
 	grp, ctx := errgroup.WithContext(ctx)
 
 	grp.Go(func() error { return srv.runHeartbeat(ctx) })
-	grp.Go(func() error { return srv.runDiscovery(ctx) })
+	grp.Go(func() error {
+		defer srv.discoveryDone.Store(true)
+
+		return srv.runDiscovery(ctx)
+	})
 	grp.Go(func() error { return srv.runHealth(ctx) })
 
 	waitErr := grp.Wait()

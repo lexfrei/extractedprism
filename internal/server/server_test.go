@@ -183,13 +183,16 @@ func TestAlive_GracefulShutdownWithBlockedProbe(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	cfg := validConfig()
 
-	// The probe blocks forever and is never unblocked. Verifies that
-	// context cancellation alone is sufficient for Run to return, even
-	// when the probe goroutine is stuck (graceful shutdown).
+	// Use a channel-based probe so the goroutine can be cleaned up.
+	blockCh := make(chan struct{})
+	t.Cleanup(func() { close(blockCh) })
+
+	// Verifies that context cancellation alone is sufficient for Run
+	// to return, even when the probe goroutine is stuck (graceful shutdown).
 	srv, err := server.New(cfg, log,
 		server.WithLivenessConfig(50*time.Millisecond, 200*time.Millisecond),
 		server.WithLivenessProbe(func() {
-			select {} // blocks forever
+			<-blockCh
 		}),
 	)
 	require.NoError(t, err)
@@ -201,6 +204,7 @@ func TestAlive_GracefulShutdownWithBlockedProbe(t *testing.T) {
 
 	waitForHealthz(t, cfg.HealthPort)
 
+	// Cancel without unblocking the probe — Run must still return.
 	cancel()
 
 	select {
