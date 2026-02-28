@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildLogger_ValidLevels(t *testing.T) {
-	levels := []string{"debug", "info", "warn", "error"}
+	levels := []string{"debug", "info", "warn", "error", "dpanic", "panic", "fatal"}
 
 	for _, level := range levels {
 		t.Run(level, func(t *testing.T) {
@@ -29,9 +29,10 @@ func TestBuildLogger_InvalidLevel(t *testing.T) {
 func TestRun_InvalidConfigRejectedBeforeLogger(t *testing.T) {
 	// Validate() is called before buildLogger(), so invalid config
 	// is rejected with "invalid configuration" rather than a logger error.
-	viper.Reset()
+	setValidViperDefaults()
+	t.Cleanup(viper.Reset)
+
 	viper.Set("endpoints", "")
-	viper.Set("log_level", "info")
 
 	err := run(nil, nil)
 	require.Error(t, err)
@@ -40,6 +41,8 @@ func TestRun_InvalidConfigRejectedBeforeLogger(t *testing.T) {
 
 func TestRun_InvalidLogLevelRejectedByValidation(t *testing.T) {
 	setValidViperDefaults()
+	t.Cleanup(viper.Reset)
+
 	viper.Set("log_level", "banana")
 
 	err := run(nil, nil)
