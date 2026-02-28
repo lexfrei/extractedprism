@@ -39,6 +39,22 @@ const (
 	// but will not lose data -- blocking only delays delivery, it does not
 	// drop updates.
 	upstreamChBuffer = 16
+
+	// defaultHeartbeatInterval is how often the liveness heartbeat probes
+	// the load balancer goroutine for responsiveness.
+	defaultHeartbeatInterval = 5 * time.Second
+
+	// defaultLivenessThreshold is the maximum time since the last successful
+	// heartbeat before the server considers itself not alive. If the LB
+	// goroutine is deadlocked, the heartbeat stops and Alive() returns false
+	// after this threshold.
+	defaultLivenessThreshold = 15 * time.Second
+)
+
+// Compile-time interface checks.
+var (
+	_ health.Checker         = (*Server)(nil)
+	_ health.LivenessChecker = (*Server)(nil)
 )
 
 // healthServer abstracts the health HTTP server for testing.
@@ -64,6 +80,24 @@ func WithHealthServer(hs healthServer) Option {
 	}
 }
 
+// WithLivenessConfig overrides the heartbeat interval and liveness threshold.
+// Useful for testing with shorter durations.
+func WithLivenessConfig(interval, threshold time.Duration) Option {
+	return func(srv *Server) {
+		srv.heartbeatInterval = interval
+		srv.livenessThreshold = threshold
+	}
+}
+
+// WithLivenessProbe overrides the function the heartbeat goroutine uses to
+// probe system health. The default probes the load balancer. Intended for
+// testing deadlock detection with a blocking probe.
+func WithLivenessProbe(fn func()) Option {
+	return func(srv *Server) {
+		srv.probeFn = fn
+	}
+}
+
 // Server ties together the load balancer, endpoint discovery, and health checking.
 type Server struct {
 	cfg        *config.Config
@@ -72,7 +106,15 @@ type Server struct {
 	healthSrv  healthServer
 	upstreamCh chan []string
 	kubeClient kubernetes.Interface
-	running    atomic.Bool
+
+	// Liveness heartbeat: the heartbeat goroutine periodically probes the
+	// load balancer and stores a timestamp. Alive() checks whether the
+	// timestamp is recent. If the LB goroutine deadlocks, the probe hangs,
+	// the heartbeat stops, and Alive() returns false after the threshold.
+	lastHeartbeat     atomic.Int64 // unix nanos; 0 means not started
+	heartbeatInterval time.Duration
+	livenessThreshold time.Duration
+	probeFn           func()
 }
 
 // New creates a Server from the given config.
@@ -90,14 +132,22 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 	}
 
 	srv := &Server{
-		cfg:        cfg,
-		logger:     logger,
-		lbHandle:   lbHandle,
-		upstreamCh: make(chan []string, upstreamChBuffer),
+		cfg:               cfg,
+		logger:            logger,
+		lbHandle:          lbHandle,
+		upstreamCh:        make(chan []string, upstreamChBuffer),
+		heartbeatInterval: defaultHeartbeatInterval,
+		livenessThreshold: defaultLivenessThreshold,
 	}
 
 	for _, opt := range opts {
 		opt(srv)
+	}
+
+	if srv.probeFn == nil {
+		srv.probeFn = func() {
+			_, _ = srv.lbHandle.Healthy()
+		}
 	}
 
 	if srv.healthSrv == nil {
@@ -128,10 +178,17 @@ func createLoadBalancer(
 	return lbHandle, nil
 }
 
-// Alive reports whether the server's Run loop is active.
-// Returns false before Run is called and after Run returns.
+// Alive reports whether the server's Run loop is active and responsive.
+// Returns false before Run is called, after Run returns, or when the
+// heartbeat goroutine has not updated within the liveness threshold
+// (indicating a deadlocked load balancer goroutine).
 func (srv *Server) Alive() bool {
-	return srv.running.Load()
+	last := srv.lastHeartbeat.Load()
+	if last == 0 {
+		return false
+	}
+
+	return time.Since(time.Unix(0, last)) < srv.livenessThreshold
 }
 
 // Healthy delegates to the load balancer health status.
@@ -146,8 +203,7 @@ func (srv *Server) Healthy() (bool, error) {
 
 // Run starts all subsystems and blocks until ctx is cancelled.
 func (srv *Server) Run(ctx context.Context) error {
-	srv.running.Store(true)
-	defer srv.running.Store(false)
+	defer srv.lastHeartbeat.Store(0)
 
 	err := srv.lbHandle.Start(srv.upstreamCh)
 	if err != nil {
@@ -171,6 +227,7 @@ func (srv *Server) Run(ctx context.Context) error {
 
 	grp, ctx := errgroup.WithContext(ctx)
 
+	grp.Go(func() error { return srv.runHeartbeat(ctx) })
 	grp.Go(func() error { return srv.runDiscovery(ctx) })
 	grp.Go(func() error { return srv.runHealth(ctx) })
 
@@ -180,6 +237,28 @@ func (srv *Server) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// runHeartbeat periodically probes the load balancer and updates the
+// heartbeat timestamp. If the probe function blocks (e.g., because the LB
+// goroutine is deadlocked), the timestamp goes stale and Alive() returns
+// false, causing the liveness probe to fail and Kubernetes to restart the pod.
+func (srv *Server) runHeartbeat(ctx context.Context) error {
+	ticker := time.NewTicker(srv.heartbeatInterval)
+	defer ticker.Stop()
+
+	// Initial heartbeat so Alive() returns true immediately.
+	srv.lastHeartbeat.Store(time.Now().UnixNano())
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			srv.probeFn()
+			srv.lastHeartbeat.Store(time.Now().UnixNano())
+		}
+	}
 }
 
 func (srv *Server) runDiscovery(ctx context.Context) error {

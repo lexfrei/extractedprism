@@ -31,6 +31,16 @@ func (m *mockChecker) Alive() bool {
 	return m.alive
 }
 
+// mockLiveness implements only LivenessChecker, used to verify that
+// /healthz uses the liveness parameter and not the checker parameter.
+type mockLiveness struct {
+	alive bool
+}
+
+func (m *mockLiveness) Alive() bool {
+	return m.alive
+}
+
 func newTestLogger() *zap.Logger {
 	return zap.NewNop()
 }
@@ -58,6 +68,21 @@ func TestHealthz_NotAlive_Returns503(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "not alive\n", rec.Body.String())
+}
+
+func TestHealthz_UsesSeparateLivenessChecker(t *testing.T) {
+	checker := &mockChecker{healthy: true, alive: true}
+	liveness := &mockLiveness{alive: false}
+	srv := health.NewServer("127.0.0.1", 0, checker, liveness, newTestLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
+		"/healthz must use the liveness parameter, not the checker")
 	assert.Equal(t, "not alive\n", rec.Body.String())
 }
 

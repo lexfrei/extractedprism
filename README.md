@@ -171,7 +171,7 @@ The merged provider deduplicates endpoints across all sub-providers and sends th
 
 The health HTTP server exposes two endpoints on the configured health port:
 
-- **`/healthz`** (liveness): Always returns HTTP 200. The proxy process is alive.
+- **`/healthz`** (liveness): Returns HTTP 200 while the Run loop and load balancer goroutine are responsive. Returns HTTP 503 if the heartbeat probe detects the system is no longer alive (e.g., deadlocked LB, crashed Run loop).
 - **`/readyz`** (readiness): Queries the load balancer's `Healthy()` method. Returns HTTP 200 if at least one upstream is reachable, HTTP 503 otherwise.
 
 Both endpoints accept only GET and HEAD requests. Other methods return 405 Method Not Allowed. OPTIONS returns 204 with the allowed methods.

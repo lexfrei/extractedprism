@@ -136,6 +136,49 @@ func TestAlive_FalseAfterRunReturns(t *testing.T) {
 	assert.False(t, srv.Alive(), "Alive must return false after Run returns")
 }
 
+func TestAlive_HeartbeatStopsOnBlockedProbe(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+
+	blockCh := make(chan struct{})
+
+	srv, err := server.New(cfg, log,
+		server.WithLivenessConfig(50*time.Millisecond, 200*time.Millisecond),
+		server.WithLivenessProbe(func() {
+			<-blockCh // blocks until channel is closed, simulating deadlocked LB
+		}),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	waitForHealthz(t, cfg.HealthPort)
+
+	// Initially alive from the first heartbeat stored before probe runs.
+	assert.True(t, srv.Alive(), "should be alive from initial heartbeat")
+
+	// The probe blocks on every tick, so no further heartbeats are stored.
+	// After the liveness threshold expires, Alive must return false.
+	require.Eventually(t, func() bool {
+		return !srv.Alive()
+	}, 1*time.Second, 25*time.Millisecond,
+		"Alive must become false when heartbeat probe is blocked")
+
+	// Clean up: cancel context and unblock the stuck probe goroutine.
+	cancel()
+	close(blockCh)
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for shutdown")
+	}
+}
+
 func TestNew_InvalidConfig(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	cfg := config.NewBaseConfig()
