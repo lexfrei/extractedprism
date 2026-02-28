@@ -41,6 +41,13 @@ func (m *mockLiveness) Alive() bool {
 	return m.alive
 }
 
+// Compile-time interface checks for test mocks.
+var (
+	_ health.Checker         = (*mockChecker)(nil)
+	_ health.LivenessChecker = (*mockChecker)(nil)
+	_ health.LivenessChecker = (*mockLiveness)(nil)
+)
+
 func newTestLogger() *zap.Logger {
 	return zap.NewNop()
 }
