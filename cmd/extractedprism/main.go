@@ -113,6 +113,8 @@ func run(_ *cobra.Command, _ []string) error {
 }
 
 func buildConfig() *config.Config {
+	// NewBaseConfig is used for allocation; actual defaults come through the
+	// cobra/viper pipeline (registerFlags sets cobra defaults from NewBaseConfig).
 	cfg := config.NewBaseConfig()
 	cfg.BindAddress = viper.GetString("bind_address")
 	cfg.BindPort = viper.GetInt("bind_port")
