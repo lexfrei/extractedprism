@@ -5,7 +5,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
 	"k8s.io/client-go/rest"
+
+	"github.com/lexfrei/extractedprism/internal/config"
 )
 
 func TestApplyLBOverride_SetsHostAndServerName(t *testing.T) {
@@ -88,6 +92,21 @@ func TestAlive_DiscoveryDone_ReturnsFalse(t *testing.T) {
 
 	assert.False(t, srv.Alive(),
 		"Alive must return false when discovery pipeline has exited")
+}
+
+func TestNew_SetsLivenessFromConfig(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.LivenessInterval = 3 * time.Second
+	cfg.LivenessThreshold = 10 * time.Second
+
+	srv, err := New(cfg, zaptest.NewLogger(t))
+	require.NoError(t, err)
+
+	assert.Equal(t, 3*time.Second, srv.heartbeatInterval,
+		"heartbeatInterval must be set from Config.LivenessInterval")
+	assert.Equal(t, 10*time.Second, srv.livenessThreshold,
+		"livenessThreshold must be set from Config.LivenessThreshold")
 }
 
 func TestSeedEndpoints_CopiesSlice(t *testing.T) {

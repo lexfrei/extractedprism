@@ -38,7 +38,7 @@ var (
 	ErrInvalidLivenessTiming   = errors.New("liveness threshold must be greater than liveness interval")
 )
 
-const minHealthDuration = 1 * time.Second
+const minDuration = 1 * time.Second
 
 func isValidLogLevel(level string) bool {
 	switch level {
@@ -101,12 +101,12 @@ func (cfg *Config) Validate() error {
 		return err
 	}
 
-	if cfg.HealthInterval < minHealthDuration {
-		return errors.Wrapf(ErrInvalidHealthDuration, "health interval %s: must be at least %s", cfg.HealthInterval, minHealthDuration)
+	if cfg.HealthInterval < minDuration {
+		return errors.Wrapf(ErrInvalidHealthDuration, "health interval %s: must be at least %s", cfg.HealthInterval, minDuration)
 	}
 
-	if cfg.HealthTimeout < minHealthDuration {
-		return errors.Wrapf(ErrInvalidHealthDuration, "health timeout %s: must be at least %s", cfg.HealthTimeout, minHealthDuration)
+	if cfg.HealthTimeout < minDuration {
+		return errors.Wrapf(ErrInvalidHealthDuration, "health timeout %s: must be at least %s", cfg.HealthTimeout, minDuration)
 	}
 
 	if cfg.HealthTimeout >= cfg.HealthInterval {
@@ -117,14 +117,14 @@ func (cfg *Config) Validate() error {
 		return errors.Wrapf(ErrInvalidLogLevel, "%q: must be one of debug, info, warn, error, dpanic, panic, fatal", cfg.LogLevel)
 	}
 
-	if cfg.LivenessInterval < minHealthDuration {
+	if cfg.LivenessInterval < minDuration {
 		return errors.Wrapf(ErrInvalidLivenessDuration,
-			"liveness interval %s: must be at least %s", cfg.LivenessInterval, minHealthDuration)
+			"liveness interval %s: must be at least %s", cfg.LivenessInterval, minDuration)
 	}
 
-	if cfg.LivenessThreshold < minHealthDuration {
+	if cfg.LivenessThreshold < minDuration {
 		return errors.Wrapf(ErrInvalidLivenessDuration,
-			"liveness threshold %s: must be at least %s", cfg.LivenessThreshold, minHealthDuration)
+			"liveness threshold %s: must be at least %s", cfg.LivenessThreshold, minDuration)
 	}
 
 	if cfg.LivenessThreshold <= cfg.LivenessInterval {

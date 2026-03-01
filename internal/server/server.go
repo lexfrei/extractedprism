@@ -70,10 +70,10 @@ func WithHealthServer(hs healthServer) Option {
 	}
 }
 
-// WithLivenessConfig overrides the heartbeat interval and liveness threshold.
-// Both values must be positive, and threshold must be greater than interval
-// to avoid false liveness failures between heartbeat ticks. For production
-// use, threshold should be at least 2x interval to account for scheduling jitter.
+// WithLivenessConfig overrides the heartbeat interval and liveness threshold
+// from Config.LivenessInterval and Config.LivenessThreshold. Intended for
+// testing with sub-second intervals that would be rejected by config validation.
+// Both values must be positive, and threshold must be greater than interval.
 // Panics on invalid values.
 func WithLivenessConfig(interval, threshold time.Duration) Option {
 	if interval <= 0 || threshold <= 0 {
