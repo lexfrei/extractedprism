@@ -94,9 +94,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
             type=raw,value=latest
           labels: |
             org.opencontainers.image.description=Per-node TCP load balancer for Kubernetes API server high availability
@@ -161,9 +161,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
             type=raw,value=latest
           labels: |
             org.opencontainers.image.description=Per-node TCP load balancer for Kubernetes API server high availability
@@ -193,13 +193,13 @@ jobs:
       - name: Sign container image by digest
         run: |
           FIRST_TAG=$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
-          DIGEST=$(docker buildx imagetools inspect "${FIRST_TAG}" --format '{{.Manifest.Digest}}')
+          DIGEST=$(docker buildx imagetools inspect "${FIRST_TAG}" | grep -m1 '^Digest:' | awk '{print $2}')
           cosign sign --yes "ghcr.io/${{ github.repository }}@${DIGEST}"
 
       - name: Generate container summary
         run: |
           IMAGE_TAG="${{ fromJSON(steps.meta.outputs.json).tags[0] }}"
-          MANIFEST_DIGEST=$(docker buildx imagetools inspect "${IMAGE_TAG}" --format '{{.Manifest.Digest}}')
+          MANIFEST_DIGEST=$(docker buildx imagetools inspect "${IMAGE_TAG}" | grep -m1 '^Digest:' | awk '{print $2}')
 
           {
             echo "## Container Image"
@@ -210,7 +210,7 @@ jobs:
             echo '```'
             echo ""
             echo "### Platforms"
-            docker buildx imagetools inspect "${IMAGE_TAG}" --format '{{range .Manifest.Manifests}}- {{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}}{{"\n"}}{{end}}'
+            docker buildx imagetools inspect "${IMAGE_TAG}" | grep '^\s*Platform:' | grep -v 'unknown' | awk '{print "- "$2}'
             echo ""
             echo "### Manifest Digest"
             echo "\`${MANIFEST_DIGEST}\`"
@@ -236,7 +236,7 @@ jobs:
 
       - name: Generate release notes
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${GITHUB_REF_NAME}"
           CURRENT_TAG="${GITHUB_REF_NAME}"
           PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${CURRENT_TAG}$" | head -1)
 
