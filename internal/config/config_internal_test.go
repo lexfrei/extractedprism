@@ -8,24 +8,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestValidateHealthBindAddress_EmptyString(t *testing.T) {
-	// This path is unreachable through Validate() because Validate() defaults
-	// HealthBindAddress to BindAddress before calling validateHealthBindAddress.
-	// The empty-string check exists as defense-in-depth for direct callers.
-	err := validateHealthBindAddress("")
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrInvalidHealthBindAddress))
-	assert.Contains(t, err.Error(), "must not be empty")
+func TestValidateAddress_EmptyString(t *testing.T) {
+	tests := []struct {
+		name     string
+		sentinel error
+	}{
+		{name: "bind address sentinel", sentinel: ErrInvalidBindAddress},
+		{name: "health bind address sentinel", sentinel: ErrInvalidHealthBindAddress},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAddress("", tt.sentinel)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, tt.sentinel))
+			assert.Contains(t, err.Error(), "must not be empty")
+		})
+	}
 }
 
-func TestValidateHealthBindAddress_InvalidHost(t *testing.T) {
-	err := validateHealthBindAddress("host/path")
+func TestValidateAddress_InvalidHost(t *testing.T) {
+	err := validateAddress("host/path", ErrInvalidBindAddress)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrInvalidHealthBindAddress))
+	assert.True(t, errors.Is(err, ErrInvalidBindAddress))
 	assert.Contains(t, err.Error(), "must be a valid IP address or hostname")
 }
 
-func TestValidateHealthBindAddress_ValidHost(t *testing.T) {
-	err := validateHealthBindAddress("127.0.0.1")
+func TestValidateAddress_ValidHost(t *testing.T) {
+	err := validateAddress("127.0.0.1", ErrInvalidBindAddress)
 	require.NoError(t, err)
 }
