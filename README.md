@@ -137,6 +137,8 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 | `--health-timeout` | `EP_HEALTH_TIMEOUT` | `15s` | Timeout for each upstream health check |
 | `--enable-discovery` | `EP_ENABLE_DISCOVERY` | `true` | Enable Kubernetes EndpointSlice discovery |
 | `--log-level` | `EP_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`, `dpanic`, `panic`, `fatal`) |
+| `--liveness-interval` | `EP_LIVENESS_INTERVAL` | `5s` | Heartbeat probe interval for liveness detection |
+| `--liveness-threshold` | `EP_LIVENESS_THRESHOLD` | `15s` | Maximum time since last heartbeat before liveness fails |
 
 ### Validation rules
 
@@ -146,6 +148,8 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 - `--health-interval` and `--health-timeout` must be at least 1 second
 - `--health-timeout` must be less than `--health-interval`
 - `--log-level` must be one of `debug`, `info`, `warn`, `error`, `dpanic`, `panic`, `fatal`
+- `--liveness-interval` and `--liveness-threshold` must be at least 1 second
+- `--liveness-threshold` must be greater than `--liveness-interval`
 
 ## How it works
 

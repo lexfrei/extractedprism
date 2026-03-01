@@ -55,6 +55,8 @@ func registerFlags() {
 	flags.Duration("health-timeout", base.HealthTimeout, "timeout for each health check")
 	flags.Bool("enable-discovery", base.EnableDiscovery, "enable Kubernetes endpoint discovery")
 	flags.String("log-level", base.LogLevel, "log level (debug, info, warn, error, dpanic, panic, fatal)")
+	flags.Duration("liveness-interval", base.LivenessInterval, "heartbeat probe interval for liveness detection")
+	flags.Duration("liveness-threshold", base.LivenessThreshold, "maximum time since last heartbeat before liveness fails")
 }
 
 func bindEnvVars() {
@@ -70,6 +72,8 @@ func bindEnvVars() {
 	mustBindPFlag("health_timeout", flags.Lookup("health-timeout"))
 	mustBindPFlag("enable_discovery", flags.Lookup("enable-discovery"))
 	mustBindPFlag("log_level", flags.Lookup("log-level"))
+	mustBindPFlag("liveness_interval", flags.Lookup("liveness-interval"))
+	mustBindPFlag("liveness_threshold", flags.Lookup("liveness-threshold"))
 
 	viper.AutomaticEnv()
 }
@@ -128,6 +132,8 @@ func buildConfig() *config.Config {
 	cfg.HealthTimeout = viper.GetDuration("health_timeout")
 	cfg.EnableDiscovery = viper.GetBool("enable_discovery")
 	cfg.LogLevel = viper.GetString("log_level")
+	cfg.LivenessInterval = viper.GetDuration("liveness_interval")
+	cfg.LivenessThreshold = viper.GetDuration("liveness_threshold")
 
 	return cfg
 }

@@ -11,12 +11,14 @@ import (
 )
 
 const (
-	defaultBindAddress    = "127.0.0.1"
-	defaultBindPort       = 7445
-	defaultHealthPort     = 7446
-	defaultHealthInterval = 20 * time.Second
-	defaultHealthTimeout  = 15 * time.Second
-	defaultLogLevel       = "info"
+	defaultBindAddress       = "127.0.0.1"
+	defaultBindPort          = 7445
+	defaultHealthPort        = 7446
+	defaultHealthInterval    = 20 * time.Second
+	defaultHealthTimeout     = 15 * time.Second
+	defaultLogLevel          = "info"
+	defaultLivenessInterval  = 5 * time.Second
+	defaultLivenessThreshold = 15 * time.Second
 
 	minPort = 1
 	maxPort = 65535
@@ -24,17 +26,19 @@ const (
 
 // Sentinel errors for configuration validation.
 var (
-	ErrNoEndpoints           = errors.New("no endpoints configured")
-	ErrInvalidEndpoint       = errors.New("invalid endpoint")
-	ErrInvalidPort           = errors.New("invalid port number")
-	ErrPortConflict          = errors.New("bind port and health port must differ")
-	ErrInvalidHealthTiming   = errors.New("health timeout must be less than health interval")
-	ErrInvalidBindAddress    = errors.New("invalid bind address")
-	ErrInvalidHealthDuration = errors.New("invalid health duration")
-	ErrInvalidLogLevel       = errors.New("invalid log level")
+	ErrNoEndpoints             = errors.New("no endpoints configured")
+	ErrInvalidEndpoint         = errors.New("invalid endpoint")
+	ErrInvalidPort             = errors.New("invalid port number")
+	ErrPortConflict            = errors.New("bind port and health port must differ")
+	ErrInvalidHealthTiming     = errors.New("health timeout must be less than health interval")
+	ErrInvalidBindAddress      = errors.New("invalid bind address")
+	ErrInvalidHealthDuration   = errors.New("invalid health duration")
+	ErrInvalidLogLevel         = errors.New("invalid log level")
+	ErrInvalidLivenessDuration = errors.New("invalid liveness duration")
+	ErrInvalidLivenessTiming   = errors.New("liveness threshold must be greater than liveness interval")
 )
 
-const minHealthDuration = 1 * time.Second
+const minDuration = 1 * time.Second
 
 func isValidLogLevel(level string) bool {
 	switch level {
@@ -47,14 +51,16 @@ func isValidLogLevel(level string) bool {
 
 // Config holds all configuration for the extractedprism proxy.
 type Config struct {
-	BindAddress     string
-	BindPort        int
-	HealthPort      int
-	Endpoints       []string
-	HealthInterval  time.Duration
-	HealthTimeout   time.Duration
-	EnableDiscovery bool
-	LogLevel        string
+	BindAddress       string
+	BindPort          int
+	HealthPort        int
+	Endpoints         []string
+	HealthInterval    time.Duration
+	HealthTimeout     time.Duration
+	EnableDiscovery   bool
+	LogLevel          string
+	LivenessInterval  time.Duration
+	LivenessThreshold time.Duration
 }
 
 // NewBaseConfig returns a Config populated with sensible defaults for optional
@@ -62,13 +68,15 @@ type Config struct {
 // the config passes Validate.
 func NewBaseConfig() *Config {
 	return &Config{
-		BindAddress:     defaultBindAddress,
-		BindPort:        defaultBindPort,
-		HealthPort:      defaultHealthPort,
-		HealthInterval:  defaultHealthInterval,
-		HealthTimeout:   defaultHealthTimeout,
-		EnableDiscovery: true,
-		LogLevel:        defaultLogLevel,
+		BindAddress:       defaultBindAddress,
+		BindPort:          defaultBindPort,
+		HealthPort:        defaultHealthPort,
+		HealthInterval:    defaultHealthInterval,
+		HealthTimeout:     defaultHealthTimeout,
+		EnableDiscovery:   true,
+		LogLevel:          defaultLogLevel,
+		LivenessInterval:  defaultLivenessInterval,
+		LivenessThreshold: defaultLivenessThreshold,
 	}
 }
 
@@ -93,12 +101,12 @@ func (cfg *Config) Validate() error {
 		return err
 	}
 
-	if cfg.HealthInterval < minHealthDuration {
-		return errors.Wrapf(ErrInvalidHealthDuration, "health interval %s: must be at least %s", cfg.HealthInterval, minHealthDuration)
+	if cfg.HealthInterval < minDuration {
+		return errors.Wrapf(ErrInvalidHealthDuration, "health interval %s: must be at least %s", cfg.HealthInterval, minDuration)
 	}
 
-	if cfg.HealthTimeout < minHealthDuration {
-		return errors.Wrapf(ErrInvalidHealthDuration, "health timeout %s: must be at least %s", cfg.HealthTimeout, minHealthDuration)
+	if cfg.HealthTimeout < minDuration {
+		return errors.Wrapf(ErrInvalidHealthDuration, "health timeout %s: must be at least %s", cfg.HealthTimeout, minDuration)
 	}
 
 	if cfg.HealthTimeout >= cfg.HealthInterval {
@@ -107,6 +115,20 @@ func (cfg *Config) Validate() error {
 
 	if !isValidLogLevel(cfg.LogLevel) {
 		return errors.Wrapf(ErrInvalidLogLevel, "%q: must be one of debug, info, warn, error, dpanic, panic, fatal", cfg.LogLevel)
+	}
+
+	if cfg.LivenessInterval < minDuration {
+		return errors.Wrapf(ErrInvalidLivenessDuration,
+			"liveness interval %s: must be at least %s", cfg.LivenessInterval, minDuration)
+	}
+
+	if cfg.LivenessThreshold < minDuration {
+		return errors.Wrapf(ErrInvalidLivenessDuration,
+			"liveness threshold %s: must be at least %s", cfg.LivenessThreshold, minDuration)
+	}
+
+	if cfg.LivenessThreshold <= cfg.LivenessInterval {
+		return ErrInvalidLivenessTiming
 	}
 
 	return nil

@@ -39,16 +39,6 @@ const (
 	// but will not lose data -- blocking only delays delivery, it does not
 	// drop updates.
 	upstreamChBuffer = 16
-
-	// defaultHeartbeatInterval is how often the liveness heartbeat probes
-	// the load balancer goroutine for responsiveness.
-	defaultHeartbeatInterval = 5 * time.Second
-
-	// defaultLivenessThreshold is the maximum time since the last successful
-	// heartbeat before the server considers itself not alive. If the LB
-	// goroutine is deadlocked, the heartbeat stops and Alive() returns false
-	// after this threshold.
-	defaultLivenessThreshold = 15 * time.Second
 )
 
 // Compile-time interface checks.
@@ -80,10 +70,10 @@ func WithHealthServer(hs healthServer) Option {
 	}
 }
 
-// WithLivenessConfig overrides the heartbeat interval and liveness threshold.
-// Both values must be positive, and threshold must be greater than interval
-// to avoid false liveness failures between heartbeat ticks. For production
-// use, threshold should be at least 2x interval to account for scheduling jitter.
+// WithLivenessConfig overrides the heartbeat interval and liveness threshold
+// from Config.LivenessInterval and Config.LivenessThreshold. Intended for
+// testing with sub-second intervals that would be rejected by config validation.
+// Both values must be positive, and threshold must be greater than interval.
 // Panics on invalid values.
 func WithLivenessConfig(interval, threshold time.Duration) Option {
 	if interval <= 0 || threshold <= 0 {
@@ -174,8 +164,8 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 		logger:            logger,
 		lbHandle:          lbHandle,
 		upstreamCh:        make(chan []string, upstreamChBuffer),
-		heartbeatInterval: defaultHeartbeatInterval,
-		livenessThreshold: defaultLivenessThreshold,
+		heartbeatInterval: cfg.LivenessInterval,
+		livenessThreshold: cfg.LivenessThreshold,
 	}
 
 	for _, opt := range opts {

@@ -675,3 +675,36 @@ func TestRun_SeedsLBWithStaticEndpoints(t *testing.T) {
 		t.Fatal("timed out waiting for shutdown")
 	}
 }
+
+func TestNew_UsesConfigLivenessValues(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	cfg := validConfig()
+	cfg.LivenessInterval = 2 * time.Second
+	cfg.LivenessThreshold = 5 * time.Second
+
+	srv, err := server.New(cfg, log,
+		server.WithLivenessProbe(func() {}),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Run(ctx) }()
+
+	waitForHealthz(t, cfg.HealthPort)
+
+	// With config-based liveness values (no WithLivenessConfig override),
+	// the server should be alive as the no-op probe completes quickly.
+	assert.True(t, srv.Alive(),
+		"server must be alive with config-based liveness values")
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for shutdown")
+	}
+}
