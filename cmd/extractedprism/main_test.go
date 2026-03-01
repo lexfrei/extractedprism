@@ -76,7 +76,9 @@ func setValidViperDefaults() {
 	viper.Set("bind_address", "127.0.0.1")
 	viper.Set("bind_port", 17999)
 	viper.Set("health_port", 18000)
-	viper.Set("health_bind_address", "")
+	// health_bind_address intentionally not set: defaults to empty via
+	// viper zero value, matching the production behavior where the flag
+	// is not provided and Validate() defaults it to BindAddress.
 	viper.Set("endpoints", "10.0.0.1:6443")
 	viper.Set("health_interval", "20s")
 	viper.Set("health_timeout", "15s")
