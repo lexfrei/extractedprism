@@ -83,6 +83,8 @@ func NewBaseConfig() *Config {
 }
 
 // Validate checks that the configuration is valid.
+// Note: Validate mutates cfg.HealthBindAddress, defaulting it to cfg.BindAddress
+// when empty. Callers should not assume Config is unchanged after Validate.
 func (cfg *Config) Validate() error {
 	if len(cfg.Endpoints) == 0 {
 		return ErrNoEndpoints
@@ -162,6 +164,10 @@ func validateBindAddress(addr string) error {
 }
 
 func validateHealthBindAddress(addr string) error {
+	if addr == "" {
+		return errors.Wrap(ErrInvalidHealthBindAddress, "must not be empty")
+	}
+
 	if !isValidHost(addr) {
 		return errors.Wrapf(ErrInvalidHealthBindAddress, "%s: must be a valid IP address or hostname", addr)
 	}

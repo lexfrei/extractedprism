@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/lexfrei/extractedprism/internal/config"
+	"github.com/lexfrei/extractedprism/internal/health"
 )
 
 func TestApplyLBOverride_SetsHostAndServerName(t *testing.T) {
@@ -107,6 +109,22 @@ func TestNew_SetsLivenessFromConfig(t *testing.T) {
 		"heartbeatInterval must be set from Config.LivenessInterval")
 	assert.Equal(t, 10*time.Second, srv.livenessThreshold,
 		"livenessThreshold must be set from Config.LivenessThreshold")
+}
+
+func TestNew_HealthServerUsesHealthBindAddress(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.HealthBindAddress = "0.0.0.0"
+
+	srv, err := New(cfg, zaptest.NewLogger(t))
+	require.NoError(t, err)
+
+	hs, ok := srv.healthSrv.(*health.Server)
+	require.True(t, ok, "healthSrv must be *health.Server when no override is set")
+
+	expected := fmt.Sprintf("0.0.0.0:%d", cfg.HealthPort)
+	assert.Equal(t, expected, hs.HTTPServer().Addr,
+		"health server must bind to HealthBindAddress from config")
 }
 
 func TestSeedEndpoints_CopiesSlice(t *testing.T) {

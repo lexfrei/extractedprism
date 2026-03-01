@@ -51,14 +51,37 @@ func TestRun_InvalidLogLevelRejectedByValidation(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid log level")
 }
 
+func TestBuildConfig_HealthBindAddressFromViper(t *testing.T) {
+	setValidViperDefaults()
+	t.Cleanup(viper.Reset)
+
+	viper.Set("health_bind_address", "0.0.0.0")
+
+	cfg := buildConfig()
+	assert.Equal(t, "0.0.0.0", cfg.HealthBindAddress,
+		"HealthBindAddress must be read from viper")
+}
+
+func TestBuildConfig_HealthBindAddressEmptyDefault(t *testing.T) {
+	setValidViperDefaults()
+	t.Cleanup(viper.Reset)
+
+	cfg := buildConfig()
+	assert.Empty(t, cfg.HealthBindAddress,
+		"HealthBindAddress must default to empty when not set in viper")
+}
+
 func setValidViperDefaults() {
 	viper.Reset()
 	viper.Set("bind_address", "127.0.0.1")
 	viper.Set("bind_port", 17999)
 	viper.Set("health_port", 18000)
+	viper.Set("health_bind_address", "")
 	viper.Set("endpoints", "10.0.0.1:6443")
 	viper.Set("health_interval", "20s")
 	viper.Set("health_timeout", "15s")
 	viper.Set("enable_discovery", false)
 	viper.Set("log_level", "info")
+	viper.Set("liveness_interval", "5s")
+	viper.Set("liveness_threshold", "15s")
 }

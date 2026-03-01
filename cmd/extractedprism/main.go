@@ -112,6 +112,8 @@ func run(_ *cobra.Command, _ []string) error {
 		zap.String("version", Version),
 		zap.String("bind", cfg.BindAddress),
 		zap.Int("port", cfg.BindPort),
+		zap.String("health-bind", cfg.HealthBindAddress),
+		zap.Int("health-port", cfg.HealthPort),
 	)
 
 	runErr := srv.Run(ctx)

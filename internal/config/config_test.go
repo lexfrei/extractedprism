@@ -679,6 +679,21 @@ func TestBaseConfig_HealthBindAddress_DefaultsEmpty(t *testing.T) {
 		"HealthBindAddress must default to empty (inherits BindAddress)")
 }
 
+func TestValidate_HealthBindAddress_Idempotent(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+
+	err := cfg.Validate()
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1", cfg.HealthBindAddress)
+
+	// Second call must produce the same result.
+	err = cfg.Validate()
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1", cfg.HealthBindAddress,
+		"Validate must be idempotent for HealthBindAddress")
+}
+
 func TestParseEndpoints(t *testing.T) {
 	tests := []struct {
 		name     string
