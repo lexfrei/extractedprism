@@ -603,6 +603,82 @@ func TestValidate_InvalidLivenessDuration_ErrorFormat(t *testing.T) {
 	}
 }
 
+func TestValidate_HealthBindAddress_InheritsBindAddress(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.BindAddress = "192.168.1.1"
+
+	err := cfg.Validate()
+	require.NoError(t, err)
+	assert.Equal(t, "192.168.1.1", cfg.HealthBindAddress,
+		"HealthBindAddress must inherit BindAddress when empty")
+}
+
+func TestValidate_HealthBindAddress_ExplicitOverride(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.BindAddress = "127.0.0.1"
+	cfg.HealthBindAddress = "0.0.0.0"
+
+	err := cfg.Validate()
+	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0", cfg.HealthBindAddress,
+		"HealthBindAddress must keep explicit value")
+}
+
+func TestValidate_HealthBindAddress_Invalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "contains spaces", address: "127.0.0 .1"},
+		{name: "contains slash", address: "host/path"},
+		{name: "leading hyphen", address: "-invalid.example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewBaseConfig()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.HealthBindAddress = tt.address
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidHealthBindAddress))
+		})
+	}
+}
+
+func TestValidate_HealthBindAddress_Valid(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "IPv4 all interfaces", address: "0.0.0.0"},
+		{name: "IPv6 all interfaces", address: "::"},
+		{name: "IPv4 loopback", address: "127.0.0.1"},
+		{name: "hostname", address: "my-host.example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewBaseConfig()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.HealthBindAddress = tt.address
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestBaseConfig_HealthBindAddress_DefaultsEmpty(t *testing.T) {
+	cfg := config.NewBaseConfig()
+
+	assert.Empty(t, cfg.HealthBindAddress,
+		"HealthBindAddress must default to empty (inherits BindAddress)")
+}
+
 func TestParseEndpoints(t *testing.T) {
 	tests := []struct {
 		name     string

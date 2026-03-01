@@ -26,16 +26,17 @@ const (
 
 // Sentinel errors for configuration validation.
 var (
-	ErrNoEndpoints             = errors.New("no endpoints configured")
-	ErrInvalidEndpoint         = errors.New("invalid endpoint")
-	ErrInvalidPort             = errors.New("invalid port number")
-	ErrPortConflict            = errors.New("bind port and health port must differ")
-	ErrInvalidHealthTiming     = errors.New("health timeout must be less than health interval")
-	ErrInvalidBindAddress      = errors.New("invalid bind address")
-	ErrInvalidHealthDuration   = errors.New("invalid health duration")
-	ErrInvalidLogLevel         = errors.New("invalid log level")
-	ErrInvalidLivenessDuration = errors.New("invalid liveness duration")
-	ErrInvalidLivenessTiming   = errors.New("liveness threshold must be greater than liveness interval")
+	ErrNoEndpoints              = errors.New("no endpoints configured")
+	ErrInvalidEndpoint          = errors.New("invalid endpoint")
+	ErrInvalidPort              = errors.New("invalid port number")
+	ErrPortConflict             = errors.New("bind port and health port must differ")
+	ErrInvalidHealthTiming      = errors.New("health timeout must be less than health interval")
+	ErrInvalidBindAddress       = errors.New("invalid bind address")
+	ErrInvalidHealthDuration    = errors.New("invalid health duration")
+	ErrInvalidLogLevel          = errors.New("invalid log level")
+	ErrInvalidLivenessDuration  = errors.New("invalid liveness duration")
+	ErrInvalidLivenessTiming    = errors.New("liveness threshold must be greater than liveness interval")
+	ErrInvalidHealthBindAddress = errors.New("invalid health bind address")
 )
 
 const minDuration = 1 * time.Second
@@ -54,6 +55,7 @@ type Config struct {
 	BindAddress       string
 	BindPort          int
 	HealthPort        int
+	HealthBindAddress string
 	Endpoints         []string
 	HealthInterval    time.Duration
 	HealthTimeout     time.Duration
@@ -87,6 +89,15 @@ func (cfg *Config) Validate() error {
 	}
 
 	err := validateBindAddress(cfg.BindAddress)
+	if err != nil {
+		return err
+	}
+
+	if cfg.HealthBindAddress == "" {
+		cfg.HealthBindAddress = cfg.BindAddress
+	}
+
+	err = validateHealthBindAddress(cfg.HealthBindAddress)
 	if err != nil {
 		return err
 	}
@@ -145,6 +156,14 @@ func validateBindAddress(addr string) error {
 
 	if !isValidHost(addr) {
 		return errors.Wrapf(ErrInvalidBindAddress, "%s: must be a valid IP address or hostname", addr)
+	}
+
+	return nil
+}
+
+func validateHealthBindAddress(addr string) error {
+	if !isValidHost(addr) {
+		return errors.Wrapf(ErrInvalidHealthBindAddress, "%s: must be a valid IP address or hostname", addr)
 	}
 
 	return nil
