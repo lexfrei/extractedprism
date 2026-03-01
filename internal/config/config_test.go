@@ -23,6 +23,8 @@ func TestBaseConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 15*time.Second, cfg.HealthTimeout)
 	assert.True(t, cfg.EnableDiscovery)
 	assert.Equal(t, "info", cfg.LogLevel)
+	assert.Equal(t, 5*time.Second, cfg.LivenessInterval)
+	assert.Equal(t, 15*time.Second, cfg.LivenessThreshold)
 }
 
 func TestBaseConfig_RequiresEndpoints(t *testing.T) {
@@ -491,6 +493,89 @@ func TestValidateEndpoint_Invalid(t *testing.T) {
 			assert.True(t, errors.Is(err, config.ErrInvalidEndpoint))
 		})
 	}
+}
+
+func TestValidate_InvalidLivenessDuration(t *testing.T) {
+	tests := []struct {
+		name      string
+		interval  time.Duration
+		threshold time.Duration
+	}{
+		{name: "zero interval", interval: 0, threshold: 15 * time.Second},
+		{name: "negative interval", interval: -1 * time.Second, threshold: 15 * time.Second},
+		{name: "sub-second interval", interval: 500 * time.Millisecond, threshold: 15 * time.Second},
+		{name: "zero threshold", interval: 5 * time.Second, threshold: 0},
+		{name: "negative threshold", interval: 5 * time.Second, threshold: -1 * time.Second},
+		{name: "sub-second threshold", interval: 5 * time.Second, threshold: 500 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewBaseConfig()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.LivenessInterval = tt.interval
+			cfg.LivenessThreshold = tt.threshold
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidLivenessDuration))
+		})
+	}
+}
+
+func TestValidate_ValidLivenessDurationBoundary(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.LivenessInterval = 1 * time.Second
+	cfg.LivenessThreshold = 2 * time.Second
+
+	err := cfg.Validate()
+	require.NoError(t, err)
+}
+
+func TestValidate_LivenessTimingInvalid(t *testing.T) {
+	tests := []struct {
+		name      string
+		interval  time.Duration
+		threshold time.Duration
+	}{
+		{name: "threshold equals interval", interval: 5 * time.Second, threshold: 5 * time.Second},
+		{name: "threshold less than interval", interval: 10 * time.Second, threshold: 5 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewBaseConfig()
+			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg.LivenessInterval = tt.interval
+			cfg.LivenessThreshold = tt.threshold
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrInvalidLivenessTiming))
+		})
+	}
+}
+
+func TestValidate_LivenessTimingValid(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.LivenessInterval = 5 * time.Second
+	cfg.LivenessThreshold = 10 * time.Second
+
+	err := cfg.Validate()
+	require.NoError(t, err)
+}
+
+func TestValidate_InvalidLivenessDuration_ErrorFormat(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.LivenessInterval = 0
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, config.ErrInvalidLivenessDuration))
+	assert.Contains(t, err.Error(), "liveness interval")
 }
 
 func TestParseEndpoints(t *testing.T) {

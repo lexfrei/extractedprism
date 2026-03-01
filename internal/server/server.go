@@ -39,16 +39,6 @@ const (
 	// but will not lose data -- blocking only delays delivery, it does not
 	// drop updates.
 	upstreamChBuffer = 16
-
-	// defaultHeartbeatInterval is how often the liveness heartbeat probes
-	// the load balancer goroutine for responsiveness.
-	defaultHeartbeatInterval = 5 * time.Second
-
-	// defaultLivenessThreshold is the maximum time since the last successful
-	// heartbeat before the server considers itself not alive. If the LB
-	// goroutine is deadlocked, the heartbeat stops and Alive() returns false
-	// after this threshold.
-	defaultLivenessThreshold = 15 * time.Second
 )
 
 // Compile-time interface checks.
@@ -174,8 +164,8 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 		logger:            logger,
 		lbHandle:          lbHandle,
 		upstreamCh:        make(chan []string, upstreamChBuffer),
-		heartbeatInterval: defaultHeartbeatInterval,
-		livenessThreshold: defaultLivenessThreshold,
+		heartbeatInterval: cfg.LivenessInterval,
+		livenessThreshold: cfg.LivenessThreshold,
 	}
 
 	for _, opt := range opts {
