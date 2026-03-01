@@ -183,7 +183,7 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 	}
 
 	if srv.healthSrv == nil {
-		srv.healthSrv = health.NewServer(cfg.BindAddress, cfg.HealthPort, srv, srv, logger)
+		srv.healthSrv = health.NewServer(cfg.HealthBindAddress, cfg.HealthPort, srv, srv, logger)
 	}
 
 	return srv, nil

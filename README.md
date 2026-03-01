@@ -132,6 +132,7 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 | `--bind-address` | `EP_BIND_ADDRESS` | `127.0.0.1` | Address for the TCP load balancer listener |
 | `--bind-port` | `EP_BIND_PORT` | `7445` | Port for the TCP load balancer listener |
 | `--health-port` | `EP_HEALTH_PORT` | `7446` | Port for the health check HTTP server |
+| `--health-bind-address` | `EP_HEALTH_BIND_ADDRESS` | (same as `--bind-address`) | Address for the health check HTTP server |
 | `--endpoints` | `EP_ENDPOINTS` | (required) | Comma-separated list of API server endpoints (`host:port`) |
 | `--health-interval` | `EP_HEALTH_INTERVAL` | `20s` | Interval between upstream health checks |
 | `--health-timeout` | `EP_HEALTH_TIMEOUT` | `15s` | Timeout for each upstream health check |
@@ -142,7 +143,7 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 
 ### Validation rules
 
-- `--bind-address` must be a valid IP address or RFC 1123-compliant hostname
+- `--bind-address` and `--health-bind-address` must each be a valid IP address or RFC 1123-compliant hostname
 - `--endpoints` must not be empty; each entry must be a valid `host:port` pair where the host is a valid IP address or RFC 1123 hostname and port is a number in the range 1-65535
 - `--bind-port` and `--health-port` must be in the range 1-65535 and must differ
 - `--health-interval` and `--health-timeout` must be at least 1 second
