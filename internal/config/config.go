@@ -82,24 +82,29 @@ func NewBaseConfig() *Config {
 	}
 }
 
-// Validate checks that the configuration is valid.
-// Note: Validate mutates cfg.HealthBindAddress, defaulting it to cfg.BindAddress
-// when empty. Callers should not assume Config is unchanged after Validate.
+// ApplyDefaults fills in zero-value fields with sensible defaults that depend
+// on other config fields. Call this before Validate. ApplyDefaults is
+// idempotent and safe to call multiple times.
+func (cfg *Config) ApplyDefaults() {
+	if cfg.HealthBindAddress == "" {
+		cfg.HealthBindAddress = cfg.BindAddress
+	}
+}
+
+// Validate checks that the configuration is valid. Validate is a pure
+// validator with no side effects — call ApplyDefaults first to fill in
+// dependent defaults.
 func (cfg *Config) Validate() error {
 	if len(cfg.Endpoints) == 0 {
 		return ErrNoEndpoints
 	}
 
-	err := validateBindAddress(cfg.BindAddress)
+	err := validateAddress(cfg.BindAddress, ErrInvalidBindAddress)
 	if err != nil {
 		return err
 	}
 
-	if cfg.HealthBindAddress == "" {
-		cfg.HealthBindAddress = cfg.BindAddress
-	}
-
-	err = validateHealthBindAddress(cfg.HealthBindAddress)
+	err = validateAddress(cfg.HealthBindAddress, ErrInvalidHealthBindAddress)
 	if err != nil {
 		return err
 	}
@@ -147,29 +152,19 @@ func (cfg *Config) Validate() error {
 	return nil
 }
 
-// validateBindAddress checks that addr is a valid IP address or a syntactically
+// validateAddress checks that addr is a valid IP address or a syntactically
 // valid hostname per RFC 1123. DNS resolution is intentionally not performed
 // here because it would introduce a startup dependency on DNS infrastructure,
 // which may not be available in early boot (e.g., before CNI starts).
-func validateBindAddress(addr string) error {
+// The sentinel error is used to distinguish between bind address and health
+// bind address validation failures.
+func validateAddress(addr string, sentinel error) error {
 	if addr == "" {
-		return errors.Wrap(ErrInvalidBindAddress, "must not be empty")
+		return errors.Wrap(sentinel, "must not be empty")
 	}
 
 	if !isValidHost(addr) {
-		return errors.Wrapf(ErrInvalidBindAddress, "%s: must be a valid IP address or hostname", addr)
-	}
-
-	return nil
-}
-
-func validateHealthBindAddress(addr string) error {
-	if addr == "" {
-		return errors.Wrap(ErrInvalidHealthBindAddress, "must not be empty")
-	}
-
-	if !isValidHost(addr) {
-		return errors.Wrapf(ErrInvalidHealthBindAddress, "%s: must be a valid IP address or hostname", addr)
+		return errors.Wrapf(sentinel, "%s: must be a valid IP address or hostname", addr)
 	}
 
 	return nil

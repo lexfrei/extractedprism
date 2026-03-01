@@ -12,6 +12,12 @@ import (
 	"github.com/lexfrei/extractedprism/internal/config"
 )
 
+const (
+	testLoopbackAddr     = "127.0.0.1"
+	testAllInterfaceAddr = "0.0.0.0"
+	testPrivateAddr      = "192.168.1.1"
+)
+
 func TestBaseConfig_Defaults(t *testing.T) {
 	cfg := config.NewBaseConfig()
 
@@ -29,6 +35,7 @@ func TestBaseConfig_Defaults(t *testing.T) {
 
 func TestBaseConfig_RequiresEndpoints(t *testing.T) {
 	cfg := config.NewBaseConfig()
+	cfg.ApplyDefaults()
 
 	err := cfg.Validate()
 	require.Error(t, err)
@@ -36,8 +43,19 @@ func TestBaseConfig_RequiresEndpoints(t *testing.T) {
 		"NewBaseConfig without endpoints must fail validation")
 }
 
-func TestValidate_ValidConfig(t *testing.T) {
+// validTestConfig returns a minimal valid Config with defaults applied.
+// Tests that need to override fields should modify the returned config
+// before calling Validate.
+func validTestConfig() *config.Config {
 	cfg := config.NewBaseConfig()
+	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.ApplyDefaults()
+
+	return cfg
+}
+
+func TestValidate_ValidConfig(t *testing.T) {
+	cfg := validTestConfig()
 	cfg.Endpoints = []string{"10.0.0.1:6443", "10.0.0.2:6443"}
 
 	err := cfg.Validate()
@@ -58,7 +76,7 @@ func TestValidate_InvalidEndpoint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
+			cfg := validTestConfig()
 			cfg.Endpoints = []string{tt.endpoint}
 
 			err := cfg.Validate()
@@ -69,7 +87,7 @@ func TestValidate_InvalidEndpoint(t *testing.T) {
 }
 
 func TestValidate_InvalidEndpoint_ErrorFormat(t *testing.T) {
-	cfg := config.NewBaseConfig()
+	cfg := validTestConfig()
 	cfg.Endpoints = []string{"10.0.0.1"}
 
 	err := cfg.Validate()
@@ -80,7 +98,7 @@ func TestValidate_InvalidEndpoint_ErrorFormat(t *testing.T) {
 }
 
 func TestValidate_InvalidEndpointPort_ErrorFormat(t *testing.T) {
-	cfg := config.NewBaseConfig()
+	cfg := validTestConfig()
 	cfg.Endpoints = []string{"10.0.0.1:abc"}
 
 	err := cfg.Validate()
@@ -105,7 +123,7 @@ func TestValidate_InvalidEndpointPort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
+			cfg := validTestConfig()
 			cfg.Endpoints = []string{tt.endpoint}
 
 			err := cfg.Validate()
@@ -127,7 +145,7 @@ func TestValidate_EndpointPortBoundaryValid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
+			cfg := validTestConfig()
 			cfg.Endpoints = []string{tt.endpoint}
 
 			err := cfg.Validate()
@@ -152,8 +170,7 @@ func TestValidate_InvalidPort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 
 			switch tt.setField {
 			case "bind":
@@ -188,8 +205,7 @@ func TestValidate_InvalidBindAddress(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.BindAddress = tt.address
 
 			err := cfg.Validate()
@@ -218,8 +234,7 @@ func TestValidate_ValidBindAddress(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.BindAddress = tt.address
 
 			err := cfg.Validate()
@@ -242,8 +257,7 @@ func TestValidate_BindAddressSyntacticOnly(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.BindAddress = tt.address
 
 			err := cfg.Validate()
@@ -264,8 +278,7 @@ func TestValidate_InvalidBindAddressErrorMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.BindAddress = tt.address
 
 			err := cfg.Validate()
@@ -277,8 +290,7 @@ func TestValidate_InvalidBindAddressErrorMessages(t *testing.T) {
 }
 
 func TestValidate_PortConflict(t *testing.T) {
-	cfg := config.NewBaseConfig()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg := validTestConfig()
 	cfg.BindPort = 8080
 	cfg.HealthPort = 8080
 
@@ -288,8 +300,7 @@ func TestValidate_PortConflict(t *testing.T) {
 }
 
 func TestValidate_HealthTimingInvalid(t *testing.T) {
-	cfg := config.NewBaseConfig()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg := validTestConfig()
 	cfg.HealthTimeout = 30 * time.Second
 	cfg.HealthInterval = 20 * time.Second
 
@@ -314,8 +325,7 @@ func TestValidate_InvalidHealthDuration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.HealthInterval = tt.interval
 			cfg.HealthTimeout = tt.timeout
 
@@ -327,8 +337,7 @@ func TestValidate_InvalidHealthDuration(t *testing.T) {
 }
 
 func TestValidate_ValidHealthDurationBoundary(t *testing.T) {
-	cfg := config.NewBaseConfig()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg := validTestConfig()
 	cfg.HealthInterval = 2 * time.Second
 	cfg.HealthTimeout = 1 * time.Second
 
@@ -351,8 +360,7 @@ func TestValidate_InvalidLogLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.LogLevel = tt.level
 
 			err := cfg.Validate()
@@ -378,8 +386,7 @@ func TestValidate_ValidLogLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.LogLevel = tt.level
 
 			err := cfg.Validate()
@@ -389,8 +396,7 @@ func TestValidate_ValidLogLevel(t *testing.T) {
 }
 
 func TestValidate_InvalidLogLevel_ErrorFormat(t *testing.T) {
-	cfg := config.NewBaseConfig()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg := validTestConfig()
 	cfg.LogLevel = "banana"
 
 	err := cfg.Validate()
@@ -414,7 +420,7 @@ func TestValidate_InvalidEndpointHost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
+			cfg := validTestConfig()
 			cfg.Endpoints = []string{tt.endpoint}
 
 			err := cfg.Validate()
@@ -438,7 +444,7 @@ func TestValidate_ValidEndpointHost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
+			cfg := validTestConfig()
 			cfg.Endpoints = []string{tt.endpoint}
 
 			err := cfg.Validate()
@@ -511,8 +517,7 @@ func TestValidate_InvalidLivenessDuration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.LivenessInterval = tt.interval
 			cfg.LivenessThreshold = tt.threshold
 
@@ -524,8 +529,7 @@ func TestValidate_InvalidLivenessDuration(t *testing.T) {
 }
 
 func TestValidate_ValidLivenessDurationBoundary(t *testing.T) {
-	cfg := config.NewBaseConfig()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg := validTestConfig()
 	cfg.LivenessInterval = 1 * time.Second
 	cfg.LivenessThreshold = 2 * time.Second
 
@@ -545,8 +549,7 @@ func TestValidate_LivenessTimingInvalid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.LivenessInterval = tt.interval
 			cfg.LivenessThreshold = tt.threshold
 
@@ -558,8 +561,7 @@ func TestValidate_LivenessTimingInvalid(t *testing.T) {
 }
 
 func TestValidate_LivenessTimingValid(t *testing.T) {
-	cfg := config.NewBaseConfig()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg := validTestConfig()
 	cfg.LivenessInterval = 5 * time.Second
 	cfg.LivenessThreshold = 10 * time.Second
 
@@ -590,8 +592,7 @@ func TestValidate_InvalidLivenessDuration_ErrorFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.LivenessInterval = tt.interval
 			cfg.LivenessThreshold = tt.threshold
 
@@ -603,26 +604,14 @@ func TestValidate_InvalidLivenessDuration_ErrorFormat(t *testing.T) {
 	}
 }
 
-func TestValidate_HealthBindAddress_InheritsBindAddress(t *testing.T) {
-	cfg := config.NewBaseConfig()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
-	cfg.BindAddress = "192.168.1.1"
-
-	err := cfg.Validate()
-	require.NoError(t, err)
-	assert.Equal(t, "192.168.1.1", cfg.HealthBindAddress,
-		"HealthBindAddress must inherit BindAddress when empty")
-}
-
 func TestValidate_HealthBindAddress_ExplicitOverride(t *testing.T) {
-	cfg := config.NewBaseConfig()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
-	cfg.BindAddress = "127.0.0.1"
-	cfg.HealthBindAddress = "0.0.0.0"
+	cfg := validTestConfig()
+	cfg.BindAddress = testLoopbackAddr
+	cfg.HealthBindAddress = testAllInterfaceAddr
 
 	err := cfg.Validate()
 	require.NoError(t, err)
-	assert.Equal(t, "0.0.0.0", cfg.HealthBindAddress,
+	assert.Equal(t, testAllInterfaceAddr, cfg.HealthBindAddress,
 		"HealthBindAddress must keep explicit value")
 }
 
@@ -638,8 +627,7 @@ func TestValidate_HealthBindAddress_Invalid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.HealthBindAddress = tt.address
 
 			err := cfg.Validate()
@@ -662,8 +650,7 @@ func TestValidate_HealthBindAddress_Valid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.NewBaseConfig()
-			cfg.Endpoints = []string{"10.0.0.1:6443"}
+			cfg := validTestConfig()
 			cfg.HealthBindAddress = tt.address
 
 			err := cfg.Validate()
@@ -679,19 +666,58 @@ func TestBaseConfig_HealthBindAddress_DefaultsEmpty(t *testing.T) {
 		"HealthBindAddress must default to empty (inherits BindAddress)")
 }
 
-func TestValidate_HealthBindAddress_Idempotent(t *testing.T) {
+func TestApplyDefaults_SetsHealthBindAddress(t *testing.T) {
 	cfg := config.NewBaseConfig()
-	cfg.Endpoints = []string{"10.0.0.1:6443"}
+	cfg.BindAddress = testPrivateAddr
+
+	cfg.ApplyDefaults()
+	assert.Equal(t, testPrivateAddr, cfg.HealthBindAddress,
+		"ApplyDefaults must set HealthBindAddress from BindAddress when empty")
+}
+
+func TestApplyDefaults_PreservesExplicitHealthBindAddress(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.BindAddress = testLoopbackAddr
+	cfg.HealthBindAddress = testAllInterfaceAddr
+
+	cfg.ApplyDefaults()
+	assert.Equal(t, testAllInterfaceAddr, cfg.HealthBindAddress,
+		"ApplyDefaults must preserve explicit HealthBindAddress")
+}
+
+func TestApplyDefaults_Idempotent(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	cfg.BindAddress = testPrivateAddr
+
+	cfg.ApplyDefaults()
+	assert.Equal(t, testPrivateAddr, cfg.HealthBindAddress)
+
+	cfg.ApplyDefaults()
+	assert.Equal(t, testPrivateAddr, cfg.HealthBindAddress,
+		"ApplyDefaults must be idempotent")
+}
+
+func TestValidate_DoesNotMutateConfig(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.ApplyDefaults()
+
+	before := cfg.HealthBindAddress
 
 	err := cfg.Validate()
 	require.NoError(t, err)
-	assert.Equal(t, "127.0.0.1", cfg.HealthBindAddress)
+	assert.Equal(t, before, cfg.HealthBindAddress,
+		"Validate must not mutate HealthBindAddress")
+}
 
-	// Second call must produce the same result.
-	err = cfg.Validate()
-	require.NoError(t, err)
-	assert.Equal(t, "127.0.0.1", cfg.HealthBindAddress,
-		"Validate must be idempotent for HealthBindAddress")
+func TestValidate_RejectsEmptyHealthBindAddress(t *testing.T) {
+	cfg := validTestConfig()
+	// Intentionally skip ApplyDefaults to test that Validate catches the empty address.
+	cfg.HealthBindAddress = ""
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, config.ErrInvalidHealthBindAddress),
+		"Validate must reject empty HealthBindAddress when ApplyDefaults was not called")
 }
 
 func TestParseEndpoints(t *testing.T) {
