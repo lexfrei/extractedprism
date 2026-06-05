@@ -22,22 +22,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      # Pre-install the Trivy binary with retries. The action's built-in
-      # setup downloads the binary from GitHub releases in a single attempt,
-      # which intermittently fails on a transient network error and breaks the
-      # whole job. Retrying the install removes that flake; the scan step below
-      # then reuses this binary via skip-setup-trivy.
-      - name: Install Trivy (with retry)
-        run: |
-          for attempt in 1 2 3; do
-            curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/v0.69.1/contrib/install.sh" \
-              | sh -s -- -b "${RUNNER_TEMP}/trivy-bin" v0.69.1 && break
-            echo "Trivy install attempt ${attempt} failed; retrying in 20s" >&2
-            sleep 20
-          done
-          test -x "${RUNNER_TEMP}/trivy-bin/trivy"
-          echo "${RUNNER_TEMP}/trivy-bin" >> "${GITHUB_PATH}"
-
       - name: Run Trivy vulnerability scanner (filesystem)
         uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
         with:
@@ -46,7 +30,11 @@ jobs:
           format: 'sarif'
           output: 'trivy-fs-results.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM'
-          skip-setup-trivy: true
+          # Pin a Trivy version that has a published GitHub release. This
+          # action's 0.34.1 default (v0.69.1) was yanked: the git tag still
+          # exists, so the installer reports "found version" and then 404s on
+          # the missing release asset, failing the job deterministically.
+          version: 'v0.71.0'
 
       - name: Upload Trivy filesystem results to GitHub Security
         if: (success() || failure()) && github.event.pull_request.head.repo.full_name == github.repository
