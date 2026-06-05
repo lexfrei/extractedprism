@@ -71,7 +71,7 @@ func TestHealthz_Alive_Returns200(t *testing.T) {
 	checker := newMockChecker(true, true)
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -84,7 +84,7 @@ func TestHealthz_NotAlive_Returns503(t *testing.T) {
 	checker := newMockChecker(true, false)
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -100,7 +100,7 @@ func TestHealthz_NotAlive_LogsWarning(t *testing.T) {
 	checker := newMockChecker(true, false)
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, logger)
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -119,7 +119,7 @@ func TestHealthz_Alive_NoWarningLog(t *testing.T) {
 	checker := newMockChecker(true, true)
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, logger)
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -136,7 +136,7 @@ func TestHealthz_NotAlive_LogsOnceNotOnEveryRequest(t *testing.T) {
 
 	// Send multiple requests while not alive.
 	for range 5 {
-		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 		rec := httptest.NewRecorder()
 
 		srv.ServeHTTP(rec, req)
@@ -154,7 +154,7 @@ func TestHealthz_LogsAgainAfterRecoveryAndReFailure(t *testing.T) {
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, logger)
 
 	// First failure — logs warning.
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -164,7 +164,7 @@ func TestHealthz_LogsAgainAfterRecoveryAndReFailure(t *testing.T) {
 	// Recovery.
 	checker.alive.Store(true)
 
-	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec = httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -174,7 +174,7 @@ func TestHealthz_LogsAgainAfterRecoveryAndReFailure(t *testing.T) {
 	// Second failure — should log again (new transition).
 	checker.alive.Store(false)
 
-	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec = httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -188,7 +188,7 @@ func TestHealthz_UsesSeparateLivenessChecker(t *testing.T) {
 	liveness := &mockLiveness{alive: false}
 	srv := health.NewServer("127.0.0.1", 0, checker, liveness, newTestLogger())
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -202,7 +202,7 @@ func TestHealthz_NotAlive_ContentType(t *testing.T) {
 	checker := newMockChecker(true, false)
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -214,7 +214,7 @@ func TestReadyz_HealthyReturns200(t *testing.T) {
 	checker := newMockChecker(true, true)
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -227,7 +227,7 @@ func TestReadyz_UnhealthyReturns503(t *testing.T) {
 	checker := newMockChecker(false, true)
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -241,7 +241,7 @@ func TestReadyz_ErrorReturns503WithGenericMessage(t *testing.T) {
 		errors.New("dial tcp 10.0.0.1:6443: connection refused"))
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -262,7 +262,7 @@ func TestReadyz_ErrorLogsDetails(t *testing.T) {
 	checker := newMockCheckerWithErr(false, true, internalErr)
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, logger)
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -284,7 +284,7 @@ func TestHealthz_ContentType(t *testing.T) {
 	checker := newMockChecker(true, true)
 	srv := health.NewServer("127.0.0.1", 0, checker, checker, newTestLogger())
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -306,7 +306,7 @@ func TestReadyz_ContentType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := health.NewServer("127.0.0.1", 0, tt.checker, tt.checker, newTestLogger())
 
-			req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 			rec := httptest.NewRecorder()
 
 			srv.ServeHTTP(rec, req)
@@ -326,7 +326,7 @@ func TestMethodNotAllowed(t *testing.T) {
 	for _, path := range paths {
 		for _, method := range methods {
 			t.Run(path+"/"+method, func(t *testing.T) {
-				req := httptest.NewRequest(method, path, nil)
+				req := httptest.NewRequestWithContext(t.Context(), method, path, nil)
 				rec := httptest.NewRecorder()
 
 				srv.ServeHTTP(rec, req)
@@ -347,7 +347,7 @@ func TestOptions_Returns204WithAllow(t *testing.T) {
 
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodOptions, path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, path, nil)
 			rec := httptest.NewRecorder()
 
 			srv.ServeHTTP(rec, req)
@@ -398,7 +398,7 @@ func TestUnknownPathReturns404(t *testing.T) {
 	paths := []string{"/", "/health", "/ready", "/metrics", "/foo"}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
 
 			srv.ServeHTTP(rec, req)
