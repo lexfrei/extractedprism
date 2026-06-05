@@ -11,6 +11,10 @@ linters:
     - errchkjson
     - ireturn
     - gomoddirectives
+    # gomodguard is deprecated since golangci-lint v2.12.0 (replaced by
+    # gomodguard_v2). The project does not guard module imports, so there is
+    # nothing to carry over; disabling silences the deprecation warning.
+    - gomodguard
   settings:
     tagliatelle:
       case:
@@ -122,6 +126,11 @@ linters:
           - godox
           - revive
           - gochecknoglobals
+          # Test tables intentionally repeat short literals (case names like
+          # "empty string", log levels, endpoint fixtures). Extracting them to
+          # constants hurts readability without improving the production code
+          # goconst is meant to protect. Keep goconst on for non-test code.
+          - goconst
         path: _test\.go
       - linters:
           - godox
