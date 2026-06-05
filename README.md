@@ -152,6 +152,10 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 - `--liveness-interval` and `--liveness-threshold` must be at least 1 second
 - `--liveness-threshold` must be greater than `--liveness-interval`
 
+## Examples
+
+- [Shared, SNI-routed control plane endpoint](examples/shared-sni-endpoint/) -- route kubelet through extractedprism to a shared endpoint that selects the backend by TLS SNI (for example nginx-ingress `ssl-passthrough`), using kubelet's `tls-server-name` while extractedprism stays a pure passthrough.
+
 ## How it works
 
 ### Load balancer
