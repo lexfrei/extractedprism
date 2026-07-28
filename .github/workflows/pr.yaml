@@ -38,7 +38,7 @@ jobs:
 
       - name: Upload Trivy filesystem results to GitHub Security
         if: (success() || failure()) && github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           sarif_file: 'trivy-fs-results.sarif'
           category: 'trivy-filesystem'
