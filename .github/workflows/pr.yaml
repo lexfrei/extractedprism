@@ -34,7 +34,7 @@ jobs:
           # action's 0.34.1 default (v0.69.1) was yanked: the git tag still
           # exists, so the installer reports "found version" and then 404s on
           # the missing release asset, failing the job deterministically.
-          version: 'v0.71.0'
+          version: 'v0.72.0'
 
       - name: Upload Trivy filesystem results to GitHub Security
         if: (success() || failure()) && github.event.pull_request.head.repo.full_name == github.repository
