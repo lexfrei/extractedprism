@@ -5,6 +5,7 @@ linters:
   disable:
     - depguard
     - exhaustruct
+    - exhaustruct_v5
     - gochecknoinits
     - wsl
     - lll
@@ -15,6 +16,7 @@ linters:
     # gomodguard_v2). The project does not guard module imports, so there is
     # nothing to carry over; disabling silences the deprecation warning.
     - gomodguard
+    - gomodguard_v2
   settings:
     tagliatelle:
       case:

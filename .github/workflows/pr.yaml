@@ -62,7 +62,7 @@ jobs:
           # Pin the linter version for reproducible CI. An unpinned "latest"
           # silently upgrades golangci-lint, which can fail previously-green
           # code when a new release adds or tightens linters.
-          version: v2.12.2
+          version: v2.13.2
           args: --timeout=5m
 
   test:
