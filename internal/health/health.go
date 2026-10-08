@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,7 +88,7 @@ func NewServer(bindAddress string, port int, checker Checker, liveness LivenessC
 	srv.mux = mux
 
 	srv.httpServer = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", bindAddress, port),
+		Addr:              net.JoinHostPort(bindAddress, strconv.Itoa(port)),
 		Handler:           mux,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
