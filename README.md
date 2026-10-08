@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/github/license/lexfrei/extractedprism)](LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/lexfrei/extractedprism)](https://github.com/lexfrei/extractedprism/releases/latest)
 
-Per-node TCP load balancer for Kubernetes API server high availability, inspired by [Talos KubePrism](https://www.talos.dev/latest/kubernetes-guides/configuration/kubeprism/).
+Per-node TCP load balancer for Kubernetes API server high availability, inspired by [Talos KubePrism](https://docs.siderolabs.com/talos/v1.12/configure-your-talos-cluster/system-configuration/kubeprism).
 
 ## Overview
 
@@ -157,6 +157,7 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 ## Examples
 
 - [Shared, SNI-routed control plane endpoint](examples/shared-sni-endpoint/) -- route kubelet through extractedprism to a shared endpoint that selects the backend by TLS SNI (for example nginx-ingress `ssl-passthrough`), using kubelet's `tls-server-name` while extractedprism stays a pure passthrough.
+- [Talos Linux static pod](examples/talos/) -- replace the built-in KubePrism with extractedprism on Talos Linux.
 
 ## How it works
 
@@ -228,7 +229,7 @@ On `SIGINT` or `SIGTERM`, the server cancels its context, which stops endpoint d
 | Per-node fault isolation | Yes | No | No | Yes |
 | CNI-independent bootstrap | Yes (hostNetwork + static) | Yes | Partial | Yes (built into Talos) |
 | Capabilities required | None | NET_ADMIN, NET_RAW | NET_ADMIN, NET_RAW | N/A (kernel-level) |
-| Runtime endpoint discovery | EndpointSlice Watch | N/A | N/A | EndpointSlice Watch |
+| Runtime endpoint discovery | EndpointSlice Watch | N/A | N/A | Talos cluster discovery |
 | Standalone binary | Yes | No | Yes | No (Talos only) |
 | Works with any K8s distro | Yes | Yes | Yes | Talos only |
 | Protocol | TCP L4 | L2/L3 (VRRP) | L2/L3 (ARP/BGP) | TCP L4 |
