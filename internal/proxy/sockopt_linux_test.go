@@ -95,7 +95,7 @@ func TestProxy_AcceptedClientConn_GetsDeadPeerBounds(t *testing.T) {
 		}
 	}()
 
-	prx := New(Config{
+	prx := New(&Config{
 		BindAddress: "127.0.0.1",
 		DialTimeout: time.Second,
 		// Distinct from Go's 15s keepalive defaults, so a side that silently

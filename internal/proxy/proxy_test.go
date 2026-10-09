@@ -63,7 +63,7 @@ func startProxy(t *testing.T, cfg proxy.Config, updates chan []string) (*proxy.P
 	t.Helper()
 
 	m := metrics.New()
-	prx := proxy.New(cfg, zaptest.NewLogger(t), m)
+	prx := proxy.New(&cfg, zaptest.NewLogger(t), m)
 	require.NoError(t, prx.Start(t.Context(), updates))
 
 	// The shutdown context must not derive from t.Context(): it is canceled
@@ -424,7 +424,7 @@ func TestProxy_Shutdown_ClosesConnectionsAndListener(t *testing.T) {
 
 	updates := make(chan []string, 1)
 	m := metrics.New()
-	prx := proxy.New(testConfig(), zaptest.NewLogger(t), m)
+	prx := proxy.New(new(testConfig()), zaptest.NewLogger(t), m)
 	require.NoError(t, prx.Start(t.Context(), updates))
 	addBackends(t, prx, updates, backend)
 
@@ -492,7 +492,7 @@ func TestProxy_Start_ListenError(t *testing.T) {
 	cfg.BindPort = port
 
 	m := metrics.New()
-	prx := proxy.New(cfg, zaptest.NewLogger(t), m)
+	prx := proxy.New(&cfg, zaptest.NewLogger(t), m)
 
 	err = prx.Start(t.Context(), make(chan []string))
 	require.Error(t, err, "binding an occupied port must fail")
@@ -539,7 +539,7 @@ func TestProxy_ConcurrentReconcileAndShutdown_NoDeadlock(t *testing.T) {
 
 	updates := make(chan []string, 100)
 	m := metrics.New()
-	prx := proxy.New(testConfig(), zaptest.NewLogger(t), m)
+	prx := proxy.New(new(testConfig()), zaptest.NewLogger(t), m)
 	require.NoError(t, prx.Start(t.Context(), updates))
 	updates <- []string{backend}
 
@@ -627,7 +627,7 @@ func TestProxy_DrainStart_LogsEndpointAndConnectionCount(t *testing.T) {
 	core, logs := observer.New(zap.InfoLevel)
 
 	m := metrics.New()
-	prx := proxy.New(testConfig(), zap.New(core), m)
+	prx := proxy.New(new(testConfig()), zap.New(core), m)
 
 	updates := make(chan []string, 10)
 	require.NoError(t, prx.Start(t.Context(), updates))
@@ -780,7 +780,7 @@ func TestProxy_RepeatedRemovalDuringDrain_DrainsOnce(t *testing.T) {
 	cfg.DrainTimeout = 300 * time.Millisecond
 
 	m := metrics.New()
-	prx := proxy.New(cfg, zap.New(core), m)
+	prx := proxy.New(&cfg, zap.New(core), m)
 
 	updates := make(chan []string, 10)
 	require.NoError(t, prx.Start(t.Context(), updates))
