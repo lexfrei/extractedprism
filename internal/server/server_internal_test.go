@@ -137,3 +137,23 @@ func TestSeedEndpoints_CopiesSlice(t *testing.T) {
 	assert.Equal(t, "10.0.0.1:6443", original[0],
 		"original slice must not be affected by seed mutation")
 }
+
+func TestProxyConfig_UpstreamSelection(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection string
+		want      bool
+	}{
+		{name: "random keeps uniform picks", selection: config.UpstreamSelectionRandom, want: false},
+		{name: "latency enables latency selection", selection: config.UpstreamSelectionLatency, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewBaseConfig()
+			cfg.UpstreamSelection = tt.selection
+
+			assert.Equal(t, tt.want, proxyConfig(cfg).LatencySelection)
+		})
+	}
+}

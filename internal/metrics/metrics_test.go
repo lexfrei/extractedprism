@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -123,4 +124,39 @@ func TestNew_IsolatedRegistries(t *testing.T) {
 
 	assert.Contains(t, body1, "extractedprism_connections_active 1")
 	assert.Contains(t, body2, "extractedprism_connections_active 0")
+}
+
+func TestSetBackendRTT_ExportsSeconds(t *testing.T) {
+	m := metrics.New()
+
+	m.SetBackendRTT("192.0.2.1:6443", 1500*time.Microsecond)
+
+	body := scrape(t, m)
+	assert.Contains(t, body, `extractedprism_upstream_rtt_seconds{upstream="192.0.2.1:6443"} 0.0015`)
+}
+
+func TestSetBackendTier_ExportsTierIndex(t *testing.T) {
+	m := metrics.New()
+
+	m.SetBackendTier("192.0.2.1:6443", 0)
+	m.SetBackendTier("192.0.2.2:6443", 2)
+
+	body := scrape(t, m)
+	assert.Contains(t, body, `extractedprism_upstream_latency_tier{upstream="192.0.2.1:6443"} 0`)
+	assert.Contains(t, body, `extractedprism_upstream_latency_tier{upstream="192.0.2.2:6443"} 2`)
+}
+
+func TestRemoveBackend_DeletesLatencySeries(t *testing.T) {
+	m := metrics.New()
+
+	m.SetBackendRTT("192.0.2.1:6443", time.Millisecond)
+	m.SetBackendTier("192.0.2.1:6443", 0)
+	m.SetBackendRTT("192.0.2.2:6443", time.Millisecond)
+	m.RemoveBackend("192.0.2.1:6443")
+
+	body := scrape(t, m)
+	assert.NotContains(t, body, `extractedprism_upstream_rtt_seconds{upstream="192.0.2.1:6443"}`)
+	assert.NotContains(t, body, `extractedprism_upstream_latency_tier{upstream="192.0.2.1:6443"}`)
+	assert.Contains(t, body, `extractedprism_upstream_rtt_seconds{upstream="192.0.2.2:6443"}`,
+		"other upstreams keep their series")
 }

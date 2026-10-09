@@ -24,7 +24,7 @@ func newTestProxy(t *testing.T) *Proxy {
 
 	// Short health timeout keeps dials to TEST-NET addresses bounded; the
 	// long interval keeps ticker-driven checks out of the tests.
-	return New(Config{HealthTimeout: 50 * time.Millisecond, HealthInterval: time.Hour}, zap.NewNop(), metrics.New())
+	return New(&Config{HealthTimeout: 50 * time.Millisecond, HealthInterval: time.Hour}, zap.NewNop(), metrics.New())
 }
 
 func newTestBackend(addr string) *backend {
@@ -144,13 +144,13 @@ func TestProxy_RecordFailure_Threshold(t *testing.T) {
 
 func TestNew_NilLogger_Panics(t *testing.T) {
 	assert.PanicsWithValue(t, "proxy.New: logger must not be nil", func() {
-		New(Config{}, nil, metrics.New())
+		New(&Config{}, nil, metrics.New())
 	})
 }
 
 func TestNew_NilMetrics_Panics(t *testing.T) {
 	assert.PanicsWithValue(t, "proxy.New: metrics must not be nil", func() {
-		New(Config{}, zap.NewNop(), nil)
+		New(&Config{}, zap.NewNop(), nil)
 	})
 }
 
@@ -236,7 +236,7 @@ func TestHandleConn_SuccessfulDialResetsFailureStreak(t *testing.T) {
 
 	addr := listener.Addr().String()
 
-	prx := New(Config{
+	prx := New(&Config{
 		BindAddress:    "127.0.0.1",
 		DialTimeout:    time.Second,
 		HealthInterval: time.Hour,
@@ -312,7 +312,7 @@ func TestOnHealthChange_WritesCurrentStateNotArgument(t *testing.T) {
 
 func TestHandleConn_DialAbortedByShutdown_NotCountedAsConnError(t *testing.T) {
 	core, logs := observer.New(zap.InfoLevel)
-	prx := New(Config{DialTimeout: time.Second, HealthInterval: time.Hour}, zap.New(core), metrics.New())
+	prx := New(&Config{DialTimeout: time.Second, HealthInterval: time.Hour}, zap.New(core), metrics.New())
 
 	bck := newTestBackend("127.0.0.1:6443")
 	prx.backends[bck.addr] = bck
@@ -501,7 +501,7 @@ func deadAddr(t *testing.T) string {
 func newObservedProxy() (*Proxy, *observer.ObservedLogs) {
 	core, logs := observer.New(zap.InfoLevel)
 
-	return New(Config{DialTimeout: time.Second, HealthInterval: time.Hour}, zap.New(core), metrics.New()), logs
+	return New(&Config{DialTimeout: time.Second, HealthInterval: time.Hour}, zap.New(core), metrics.New()), logs
 }
 
 func TestServeConn_RefusedByDrain_RetriesAnotherBackend(t *testing.T) {

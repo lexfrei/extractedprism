@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -28,6 +29,8 @@ type Metrics struct {
 	upstreamsActive  prometheus.Gauge
 	upstreamsTotal   prometheus.Gauge
 	backendHealth    *prometheus.GaugeVec
+	backendRTT       *prometheus.GaugeVec
+	backendTier      *prometheus.GaugeVec
 }
 
 // New creates a Metrics with all series registered on a private registry.
@@ -72,11 +75,12 @@ func New() *Metrics {
 			Name:      "upstreams_total",
 			Help:      "Total known upstreams, including unhealthy and draining ones.",
 		}),
-		backendHealth: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "health_check_status",
-			Help:      "Upstream health state after the consecutive-failure threshold, fed by health checks and client dials (1 healthy, 0 unhealthy). Health checks stop while an upstream drains, so the value holds until it is removed or re-added.",
-		}, []string{labelUpstream}),
+		backendHealth: newUpstreamGaugeVec("health_check_status",
+			"Upstream health state after the consecutive-failure threshold, fed by health checks and client dials (1 healthy, 0 unhealthy). Health checks stop while an upstream drains, so the value holds until it is removed or re-added."),
+		backendRTT: newUpstreamGaugeVec("upstream_rtt_seconds",
+			"Smoothed connect time of successful health checks, including name resolution for hostname endpoints. Only exported with --upstream-selection=latency, after the first successful check."),
+		backendTier: newUpstreamGaugeVec("upstream_latency_tier",
+			"Latency tier of the upstream, 0 being the closest group. New connections go to the lowest tier with a healthy, non-draining upstream, together with upstreams that have no sample yet. Only exported with --upstream-selection=latency, after the first successful check."),
 	}
 
 	m.registry.MustRegister(
@@ -88,9 +92,19 @@ func New() *Metrics {
 		m.upstreamsActive,
 		m.upstreamsTotal,
 		m.backendHealth,
+		m.backendRTT,
+		m.backendTier,
 	)
 
 	return m
+}
+
+func newUpstreamGaugeVec(name, help string) *prometheus.GaugeVec {
+	return prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      name,
+		Help:      help,
+	}, []string{labelUpstream})
 }
 
 // Handler returns an HTTP handler exposing the registry in Prometheus format.
@@ -143,9 +157,21 @@ func (m *Metrics) SetBackendHealth(upstream string, healthy bool) {
 	m.backendHealth.WithLabelValues(upstream).Set(value)
 }
 
-// RemoveBackend deletes the health and connection error series of a removed
-// upstream so dead series do not accumulate as endpoints change.
+// RemoveBackend deletes every per-upstream series of a removed upstream so
+// dead series do not accumulate as endpoints change.
 func (m *Metrics) RemoveBackend(upstream string) {
 	m.backendHealth.DeleteLabelValues(upstream)
 	m.connErrors.DeleteLabelValues(upstream)
+	m.backendRTT.DeleteLabelValues(upstream)
+	m.backendTier.DeleteLabelValues(upstream)
+}
+
+// SetBackendRTT records the smoothed health check connect time of an upstream.
+func (m *Metrics) SetBackendRTT(upstream string, rtt time.Duration) {
+	m.backendRTT.WithLabelValues(upstream).Set(rtt.Seconds())
+}
+
+// SetBackendTier records the latency tier of an upstream.
+func (m *Metrics) SetBackendTier(upstream string, tier int) {
+	m.backendTier.WithLabelValues(upstream).Set(float64(tier))
 }

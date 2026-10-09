@@ -21,6 +21,12 @@ const (
 	defaultLivenessThreshold = 15 * time.Second
 	defaultDrainTimeout      = 30 * time.Second
 
+	// UpstreamSelectionRandom picks uniformly among pickable upstreams.
+	UpstreamSelectionRandom = "random"
+	// UpstreamSelectionLatency prefers the upstreams with the lowest
+	// smoothed health check connect time.
+	UpstreamSelectionLatency = "latency"
+
 	minPort = 1
 	maxPort = 65535
 )
@@ -39,6 +45,7 @@ var (
 	ErrInvalidLivenessTiming    = errors.New("liveness threshold must be greater than liveness interval")
 	ErrInvalidHealthBindAddress = errors.New("invalid health bind address")
 	ErrInvalidDrainTimeout      = errors.New("drain timeout must not be negative")
+	ErrInvalidUpstreamSelection = errors.New("invalid upstream selection")
 )
 
 const minDuration = 1 * time.Second
@@ -68,6 +75,8 @@ type Config struct {
 	// DrainTimeout bounds how long connections to a removed endpoint may
 	// finish before being force-closed. Zero closes them immediately.
 	DrainTimeout time.Duration
+	// UpstreamSelection is UpstreamSelectionRandom or UpstreamSelectionLatency.
+	UpstreamSelection string
 }
 
 // NewBaseConfig returns a Config populated with sensible defaults for optional
@@ -85,6 +94,7 @@ func NewBaseConfig() *Config {
 		LivenessInterval:  defaultLivenessInterval,
 		LivenessThreshold: defaultLivenessThreshold,
 		DrainTimeout:      defaultDrainTimeout,
+		UpstreamSelection: UpstreamSelectionRandom,
 	}
 }
 
@@ -159,7 +169,17 @@ func (cfg *Config) Validate() error {
 		return errors.Wrapf(ErrInvalidDrainTimeout, "drain timeout %s", cfg.DrainTimeout)
 	}
 
-	return nil
+	return validateUpstreamSelection(cfg.UpstreamSelection)
+}
+
+func validateUpstreamSelection(selection string) error {
+	switch selection {
+	case UpstreamSelectionRandom, UpstreamSelectionLatency:
+		return nil
+	default:
+		return errors.Wrapf(ErrInvalidUpstreamSelection, "%q: must be %s or %s",
+			selection, UpstreamSelectionRandom, UpstreamSelectionLatency)
+	}
 }
 
 // validateAddress checks that addr is a valid IP address or a syntactically

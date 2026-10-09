@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,33 @@ const (
 	// noUpstreamLabel is the upstream label value recorded when a connection
 	// fails because no backend was available to dial.
 	noUpstreamLabel = "none"
+
+	// rttWeight is the EWMA weight of a new connect time sample.
+	rttWeight = 0.3
+
+	// rttOutlierFactor caps a sample at this multiple of the current
+	// average (never below tierFloor): a lost SYN costs a ~1s retransmit,
+	// which would otherwise push a near backend into a far tier for
+	// minutes, while a lasting increase still reaches the average within a
+	// few samples. A sample below the average divided by this factor
+	// replaces it: a connect cannot be abnormally fast, so such a drop
+	// means the average was inflated, for example by a slow first sample.
+	rttOutlierFactor = 4
+
+	// Latency tier rule. Tiers are built over every sampled backend,
+	// healthy or not: a tier holds every remaining backend whose smoothed
+	// RTT is at most max(best+tierFloor, best*tierRatio), with best the
+	// lowest smoothed RTT among the remaining backends. A backend that was
+	// in the tier stays until it exceeds that limit by a further quarter.
+	// The floor keeps sub-millisecond differences in one tier, the ratio
+	// widens a tier whose best backend is far away, and the gap between
+	// the two limits stops a backend near the boundary from flapping.
+	tierFloor              = 2 * time.Millisecond
+	tierRatio              = 2
+	tierHysteresisFraction = 4
+
+	// noTier marks a backend without a previous tier assignment.
+	noTier = -1
 )
 
 // Config holds the proxy configuration. Values are expected to be validated
@@ -47,6 +75,9 @@ type Config struct {
 	// DrainTimeout bounds how long a removed backend's existing connections
 	// may finish before being force-closed. Zero closes them immediately.
 	DrainTimeout time.Duration
+	// LatencySelection prefers the backends with the lowest smoothed health
+	// check connect time instead of picking uniformly at random.
+	LatencySelection bool
 }
 
 // trackedConn is one proxied connection: the accepted client side and the
@@ -84,6 +115,12 @@ type backend struct {
 	// drainGen identifies the current drain epoch; a stale drainer from an
 	// older epoch must not act on the backend.
 	drainGen atomic.Int64
+
+	// Latency selection state, guarded by Proxy.mu. tier is valid only
+	// when sampled.
+	rtt     time.Duration
+	sampled bool
+	tier    int
 }
 
 // Proxy accepts TCP connections on one address and forwards them to healthy
@@ -103,8 +140,12 @@ type Proxy struct {
 	listener net.Listener
 }
 
-// New creates a Proxy. Panics if logger or metrics is nil.
-func New(cfg Config, logger *zap.Logger, m *metrics.Metrics) *Proxy {
+// New creates a Proxy. Panics if cfg, logger or metrics is nil.
+func New(cfg *Config, logger *zap.Logger, m *metrics.Metrics) *Proxy {
+	if cfg == nil {
+		panic("proxy.New: config must not be nil")
+	}
+
 	if logger == nil {
 		panic("proxy.New: logger must not be nil")
 	}
@@ -116,7 +157,7 @@ func New(cfg Config, logger *zap.Logger, m *metrics.Metrics) *Proxy {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Proxy{
-		cfg:      cfg,
+		cfg:      *cfg,
 		logger:   logger,
 		metrics:  m,
 		ctx:      ctx,
@@ -380,6 +421,7 @@ func (prx *Proxy) removeBackend(bck *backend, gen int64) {
 	delete(prx.backends, bck.addr)
 	prx.metrics.RemoveBackend(bck.addr)
 	prx.updateUpstreamMetricsLocked()
+	prx.updateTiersLocked()
 
 	prx.logger.Info("upstream drained and removed", zap.String("upstream", bck.addr))
 }
@@ -415,6 +457,7 @@ func (prx *Proxy) healthLoop(bck *backend, stopHealth <-chan struct{}) {
 
 func (prx *Proxy) checkOnce(ctx context.Context, bck *backend) {
 	dialer := net.Dialer{Timeout: prx.cfg.HealthTimeout}
+	start := time.Now()
 
 	conn, err := dialer.DialContext(ctx, "tcp", bck.addr)
 	if err != nil {
@@ -423,9 +466,47 @@ func (prx *Proxy) checkOnce(ctx context.Context, bck *backend) {
 		return
 	}
 
+	connectTime := time.Since(start)
+
 	conn.Close()
 
 	prx.recordSuccess(bck)
+	prx.recordRTT(bck, connectTime)
+}
+
+// recordRTT feeds one successful health check connect time into the
+// backend's EWMA and recomputes the tiers. Random selection keeps no latency
+// state.
+func (prx *Proxy) recordRTT(bck *backend, sample time.Duration) {
+	if !prx.cfg.LatencySelection {
+		return
+	}
+
+	prx.mu.Lock()
+	defer prx.mu.Unlock()
+
+	// Same guard as onHealthChange: a late sample must not resurrect the
+	// series of a removed backend.
+	if prx.backends[bck.addr] != bck {
+		return
+	}
+
+	if bck.sampled {
+		sample = min(sample, max(rttOutlierFactor*bck.rtt, tierFloor))
+		if sample*rttOutlierFactor < bck.rtt {
+			bck.rtt = sample
+		} else {
+			bck.rtt += time.Duration(rttWeight * float64(sample-bck.rtt))
+		}
+	} else {
+		bck.rtt = sample
+		bck.sampled = true
+		// No previous tier: the first sample must meet a join limit.
+		bck.tier = noTier
+	}
+
+	prx.metrics.SetBackendRTT(bck.addr, bck.rtt)
+	prx.updateTiersLocked()
 }
 
 // recordFailure feeds one failed contact with the backend (health check or
@@ -488,7 +569,7 @@ func (prx *Proxy) updateUpstreamMetricsLocked() {
 	active := 0
 
 	for _, bck := range prx.backends {
-		if bck.healthy.Load() && !bck.draining.Load() {
+		if bck.pickable() {
 			active++
 		}
 	}
@@ -496,19 +577,93 @@ func (prx *Proxy) updateUpstreamMetricsLocked() {
 	prx.metrics.SetUpstreams(active, len(prx.backends))
 }
 
+// updateTiersLocked rebuilds the latency tiers by the rule documented at
+// tierFloor. Health does not move a backend between tiers; pickBackend
+// skips tiers without a pickable backend instead. Callers must hold prx.mu.
+func (prx *Proxy) updateTiersLocked() {
+	remaining := make([]*backend, 0, len(prx.backends))
+
+	for _, bck := range prx.backends {
+		if bck.sampled {
+			remaining = append(remaining, bck)
+		}
+	}
+
+	for level := 0; len(remaining) > 0; level++ {
+		best := remaining[0].rtt
+		for _, bck := range remaining {
+			best = min(best, bck.rtt)
+		}
+
+		// Hysteresis follows the group, not the tier number: the level
+		// continues the closest previous tier that has a backend meeting
+		// the join limit here, so tiers appearing or disappearing above do
+		// not split a group, and merging groups do not pull in members of
+		// the farther one.
+		group, found := 0, false
+
+		for _, bck := range remaining {
+			if bck.tier != noTier && (!found || bck.tier < group) && inTier(bck.rtt, best, false) {
+				group, found = bck.tier, true
+			}
+		}
+
+		rest := remaining[:0]
+
+		for _, bck := range remaining {
+			if !inTier(bck.rtt, best, found && bck.tier == group) {
+				rest = append(rest, bck)
+
+				continue
+			}
+
+			bck.tier = level
+			prx.metrics.SetBackendTier(bck.addr, level)
+		}
+
+		remaining = rest
+	}
+}
+
+// inTier applies the tier rule documented at tierFloor.
+func inTier(rtt, best time.Duration, wasIn bool) bool {
+	limit := max(best+tierFloor, best*tierRatio)
+	if wasIn {
+		limit += limit / tierHysteresisFraction
+	}
+
+	return rtt <= limit
+}
+
 // pickBackend returns a random pickable backend, or nil when none is
 // available. Draining backends are never picked: they serve existing
-// connections only.
+// connections only. With latency selection the pick is limited to the
+// lowest tier that has a pickable sampled backend, plus pickable backends
+// without a sample.
 func (prx *Proxy) pickBackend() *backend {
 	prx.mu.RLock()
 	defer prx.mu.RUnlock()
 
 	var pickable []*backend
 
+	activeTier := noTier
+
 	for _, bck := range prx.backends {
-		if bck.healthy.Load() && !bck.draining.Load() {
-			pickable = append(pickable, bck)
+		if !bck.pickable() {
+			continue
 		}
+
+		pickable = append(pickable, bck)
+
+		if bck.sampled && (activeTier == noTier || bck.tier < activeTier) {
+			activeTier = bck.tier
+		}
+	}
+
+	if activeTier != noTier {
+		pickable = slices.DeleteFunc(pickable, func(bck *backend) bool {
+			return bck.sampled && bck.tier != activeTier
+		})
 	}
 
 	if len(pickable) == 0 {
@@ -716,6 +871,10 @@ func (prx *Proxy) dialUpstream(addr string) (net.Conn, error) {
 	}
 
 	return conn, nil
+}
+
+func (bck *backend) pickable() bool {
+	return bck.healthy.Load() && !bck.draining.Load()
 }
 
 // startDrain marks the backend draining and returns the channels and

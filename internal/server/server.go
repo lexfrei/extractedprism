@@ -159,16 +159,7 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 
 	metricsHandle := metrics.New()
 
-	proxyHandle := proxy.New(proxy.Config{
-		BindAddress:     cfg.BindAddress,
-		BindPort:        cfg.BindPort,
-		DialTimeout:     cfg.HealthTimeout,
-		KeepAlivePeriod: keepAlivePeriod,
-		TCPUserTimeout:  tcpUserTimeout,
-		HealthInterval:  cfg.HealthInterval,
-		HealthTimeout:   cfg.HealthTimeout,
-		DrainTimeout:    cfg.DrainTimeout,
-	}, logger, metricsHandle)
+	proxyHandle := proxy.New(proxyConfig(cfg), logger, metricsHandle)
 
 	srv := &Server{
 		cfg:               cfg,
@@ -491,4 +482,18 @@ func (srv *Server) shutdownHealth(_ context.Context) error {
 	}
 
 	return nil
+}
+
+func proxyConfig(cfg *config.Config) *proxy.Config {
+	return &proxy.Config{
+		BindAddress:      cfg.BindAddress,
+		BindPort:         cfg.BindPort,
+		DialTimeout:      cfg.HealthTimeout,
+		KeepAlivePeriod:  keepAlivePeriod,
+		TCPUserTimeout:   tcpUserTimeout,
+		HealthInterval:   cfg.HealthInterval,
+		HealthTimeout:    cfg.HealthTimeout,
+		DrainTimeout:     cfg.DrainTimeout,
+		LatencySelection: cfg.UpstreamSelection == config.UpstreamSelectionLatency,
+	}
 }
