@@ -141,6 +141,7 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 | `--liveness-interval` | `EP_LIVENESS_INTERVAL` | `5s` | Heartbeat probe interval for liveness detection |
 | `--liveness-threshold` | `EP_LIVENESS_THRESHOLD` | `15s` | Maximum time since last heartbeat before liveness fails |
 | `--drain-timeout` | `EP_DRAIN_TIMEOUT` | `30s` | Grace period for connections to removed endpoints before force close (`0` closes immediately) |
+| `--upstream-selection` | `EP_UPSTREAM_SELECTION` | `random` | How new connections pick an upstream: `random` (uniform among pickable upstreams) or `latency` (prefer the lowest-latency tier, see below) |
 
 ### Validation rules
 
@@ -153,6 +154,7 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 - `--liveness-interval` and `--liveness-threshold` must be at least 1 second
 - `--liveness-threshold` must be greater than `--liveness-interval`
 - `--drain-timeout` must not be negative
+- `--upstream-selection` must be `random` or `latency`
 
 ## Examples
 
@@ -173,6 +175,10 @@ The TCP load balancer is implemented in `internal/proxy`. It accepts a channel o
 ### Graceful draining
 
 When an endpoint disappears from the upstream list (node cordon, API server rolling restart), the proxy stops routing new connections to it but lets existing connections finish within `--drain-timeout`. Remaining connections are force-closed when the timeout expires. Re-adding the endpoint before the timeout aborts the drain. A timeout of `0` closes connections to removed endpoints immediately. A new connection whose endpoint starts draining while it is being dialed gets one retry on another pickable endpoint, if there is one.
+
+### Latency-aware selection
+
+With `--upstream-selection=latency`, every successful health check feeds its connect time into a smoothed average (EWMA) per upstream; failed checks do not. For an endpoint given as a hostname, the connect time includes name resolution. Each sample is capped at four times the current average (but never below 2ms), so one slow check, such as a retransmitted SYN, moves the average by a bounded step instead of jumping to the retransmission time, while a lasting increase still shows up within a few checks. A sample below a quarter of the average replaces it, so a first check that took more than four times the usual connect time is undone by the next normal one. Upstreams with a sample are grouped into tiers by latency alone, healthy or not: tier 0 holds every upstream whose average is at most `max(best + 2ms, 2 × best)`, where `best` is the lowest average of all; tier 1 applies the same rule to the rest, and so on. An upstream leaves its tier only when its average exceeds the limit by a further 25%, so an upstream near the boundary does not flap. Membership follows the group rather than the tier number, so a tier appearing or disappearing above does not split a group. New connections are picked at random among the pickable upstreams of the lowest tier that has one, together with pickable upstreams that have no sample yet. Unhealthy and draining upstreams keep their tier, so losing some upstreams of a tier does not let a lower tier in, and losing all of them hands over to the next tier. An upstream removed from the endpoint list leaves the tiers once its drain completes, and the tiers are rebuilt without it. A new upstream takes picks before its first successful check; if it is unreachable, it keeps an equal share of that tier's picks, not of all upstreams as in `random` mode, until the consecutive-failure threshold excludes it. Every upstream within 2ms of the best one is in tier 0, so a single site with sub-millisecond differences behaves like `random`. Only health checks feed the average, so tiers follow latency changes at the pace of `--health-interval`. Existing connections stay where they are.
 
 ### Endpoint discovery
 
@@ -205,6 +211,8 @@ The health server also exposes Prometheus metrics at `/metrics`. It binds to `--
 | `extractedprism_connection_errors_total` | Counter | `upstream` | Failed connection attempts (`none` when no upstream was available); failures caused by proxy shutdown are not counted. The series of an upstream is deleted once it is drained and removed, and failures reported after that are not counted until the address is added again |
 | `extractedprism_discovery_updates_total` | Counter | `provider` | Endpoint list updates received (`static`, `kubernetes`) |
 | `extractedprism_discovery_errors_total` | Counter | `provider` | Discovery errors: provider failures, failed Watch calls, watch error events and failed re-lists. A watch stream ending is not counted, including on a dropped connection, and neither is 410 Gone expiry; a dead upstream shows in `health_check_status` instead |
+| `extractedprism_upstream_rtt_seconds` | Gauge | `upstream` | Smoothed health check connect time, including name resolution for hostname endpoints; only with `--upstream-selection=latency`, after the first successful check |
+| `extractedprism_upstream_latency_tier` | Gauge | `upstream` | Latency tier of the upstream, 0 being the closest group; new connections go to the lowest tier with a healthy, non-draining upstream, together with upstreams that have no sample yet. Only with `--upstream-selection=latency`, after the first successful check |
 | `extractedprism_health_check_status` | Gauge | `upstream` | Upstream health state after the consecutive-failure threshold, fed by health checks and client dials (1 healthy, 0 unhealthy). Health checks stop while an upstream drains, so the value holds until it is removed or re-added |
 
 ### Graceful shutdown

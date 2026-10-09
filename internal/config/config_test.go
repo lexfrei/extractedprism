@@ -790,3 +790,39 @@ func TestNewBaseConfig_DrainTimeoutDefault(t *testing.T) {
 	cfg := config.NewBaseConfig()
 	assert.Equal(t, 30*time.Second, cfg.DrainTimeout)
 }
+
+func TestNewBaseConfig_UpstreamSelectionDefaultsToRandom(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	assert.Equal(t, config.UpstreamSelectionRandom, cfg.UpstreamSelection)
+}
+
+func TestValidate_UpstreamSelection(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection string
+		wantErr   error
+	}{
+		{name: "random is valid", selection: "random", wantErr: nil},
+		{name: "latency is valid", selection: "latency", wantErr: nil},
+		{name: "empty returns ErrInvalidUpstreamSelection", selection: "", wantErr: config.ErrInvalidUpstreamSelection},
+		{name: "unknown mode returns ErrInvalidUpstreamSelection", selection: "fastest", wantErr: config.ErrInvalidUpstreamSelection},
+		{name: "mode names are case sensitive", selection: "Latency", wantErr: config.ErrInvalidUpstreamSelection},
+		{name: "surrounding whitespace is not trimmed", selection: " random", wantErr: config.ErrInvalidUpstreamSelection},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validTestConfig()
+			cfg.UpstreamSelection = tt.selection
+
+			err := cfg.Validate()
+
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.True(t, errors.Is(err, tt.wantErr))
+			}
+		})
+	}
+}

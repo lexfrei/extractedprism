@@ -99,3 +99,20 @@ func TestBuildConfig_DrainTimeoutFromViper(t *testing.T) {
 	assert.Equal(t, 7*time.Second, cfg.DrainTimeout,
 		"DrainTimeout must be read from viper")
 }
+
+func TestBuildConfig_UpstreamSelectionFromViper(t *testing.T) {
+	setValidViperDefaults()
+	t.Cleanup(viper.Reset)
+
+	viper.Set("upstream_selection", "latency")
+
+	cfg := buildConfig()
+	assert.Equal(t, "latency", cfg.UpstreamSelection,
+		"UpstreamSelection must be read from viper")
+}
+
+func TestRegisterFlags_UpstreamSelectionDefaultsToRandom(t *testing.T) {
+	flag := rootCmd.PersistentFlags().Lookup("upstream-selection")
+	require.NotNil(t, flag, "--upstream-selection must be registered")
+	assert.Equal(t, "random", flag.DefValue)
+}

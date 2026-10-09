@@ -59,6 +59,7 @@ func registerFlags() {
 	flags.Duration("liveness-interval", base.LivenessInterval, "heartbeat probe interval for liveness detection")
 	flags.Duration("liveness-threshold", base.LivenessThreshold, "maximum time since last heartbeat before liveness fails")
 	flags.Duration("drain-timeout", base.DrainTimeout, "grace period for connections to removed endpoints before force close (0 = immediate)")
+	flags.String("upstream-selection", base.UpstreamSelection, "how new connections pick an upstream (random, latency)")
 }
 
 func bindEnvVars() {
@@ -78,6 +79,7 @@ func bindEnvVars() {
 	mustBindPFlag("liveness_interval", flags.Lookup("liveness-interval"))
 	mustBindPFlag("liveness_threshold", flags.Lookup("liveness-threshold"))
 	mustBindPFlag("drain_timeout", flags.Lookup("drain-timeout"))
+	mustBindPFlag("upstream_selection", flags.Lookup("upstream-selection"))
 
 	viper.AutomaticEnv()
 }
@@ -143,6 +145,7 @@ func buildConfig() *config.Config {
 	cfg.LivenessInterval = viper.GetDuration("liveness_interval")
 	cfg.LivenessThreshold = viper.GetDuration("liveness_threshold")
 	cfg.DrainTimeout = viper.GetDuration("drain_timeout")
+	cfg.UpstreamSelection = viper.GetString("upstream_selection")
 
 	return cfg
 }

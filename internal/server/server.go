@@ -486,13 +486,14 @@ func (srv *Server) shutdownHealth(_ context.Context) error {
 
 func proxyConfig(cfg *config.Config) *proxy.Config {
 	return &proxy.Config{
-		BindAddress:     cfg.BindAddress,
-		BindPort:        cfg.BindPort,
-		DialTimeout:     cfg.HealthTimeout,
-		KeepAlivePeriod: keepAlivePeriod,
-		TCPUserTimeout:  tcpUserTimeout,
-		HealthInterval:  cfg.HealthInterval,
-		HealthTimeout:   cfg.HealthTimeout,
-		DrainTimeout:    cfg.DrainTimeout,
+		BindAddress:      cfg.BindAddress,
+		BindPort:         cfg.BindPort,
+		DialTimeout:      cfg.HealthTimeout,
+		KeepAlivePeriod:  keepAlivePeriod,
+		TCPUserTimeout:   tcpUserTimeout,
+		HealthInterval:   cfg.HealthInterval,
+		HealthTimeout:    cfg.HealthTimeout,
+		DrainTimeout:     cfg.DrainTimeout,
+		LatencySelection: cfg.UpstreamSelection == config.UpstreamSelectionLatency,
 	}
 }
