@@ -3,6 +3,7 @@ package health_test
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -561,4 +562,51 @@ func TestMetrics_ReadOnlyMethods(t *testing.T) {
 
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code,
 		"/metrics must reject non-read methods like the other endpoints")
+}
+
+func TestNewServer_ListenAddressFormat(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+		want    string
+	}{
+		{name: "IPv4 address", address: "127.0.0.1", want: "127.0.0.1:7446"},
+		{name: "IPv6 address is bracketed", address: "::1", want: "[::1]:7446"},
+		{name: "IPv6 node address is bracketed", address: "fd00::1", want: "[fd00::1]:7446"},
+		{name: "hostname", address: "localhost", want: "localhost:7446"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker := newMockChecker(true, true)
+			srv := health.NewServer(tt.address, 7446, checker, checker, newTestLogger())
+
+			assert.Equal(t, tt.want, srv.HTTPServer().Addr)
+		})
+	}
+}
+
+func TestServer_StartsOnIPv6Loopback(t *testing.T) {
+	probe, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+
+	require.NoError(t, probe.Close())
+
+	checker := newMockChecker(true, true)
+	srv := health.NewServer("::1", 0, checker, checker, newTestLogger())
+
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- srv.Start(t.Context()) }()
+
+	require.Eventually(t, func() bool { return srv.Addr() != "" }, 3*time.Second, 10*time.Millisecond,
+		"health server must start listening on an IPv6 address")
+
+	shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	require.NoError(t, srv.Shutdown(shutCtx))
+	require.NoError(t, <-errCh)
 }
