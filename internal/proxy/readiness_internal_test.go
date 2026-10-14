@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -218,4 +220,52 @@ func TestCheckOnce_Readyz_SkipsMetricOfRemovedBackend(t *testing.T) {
 	prx.checkOnce(t.Context(), bck)
 
 	assert.NotContains(t, scrapeInternal(t, prx.metrics), "extractedprism_upstream_ready{")
+}
+
+// slowHealthDial makes the health check dial take delay before connecting,
+// or fail when ctx ends first.
+func slowHealthDial(delay time.Duration) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+
+		dialer := net.Dialer{}
+
+		return dialer.DialContext(ctx, network, addr)
+	}
+}
+
+func TestCheckOnce_Readyz_DialAndProbeShareOneDeadline(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Fits a fresh timeout, but not what the slow dial leaves of it.
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	prx := New(&Config{
+		HealthTimeout:  timeout,
+		HealthInterval: time.Hour,
+		Readiness:      &ReadinessCheck{Client: srv.Client()},
+	}, zap.NewNop(), metrics.New())
+	prx.dialHealth = slowHealthDial(200 * time.Millisecond)
+	bck := newTestBackend(srv.Listener.Addr().String())
+
+	for range healthFailuresToUnhealthy {
+		start := time.Now()
+
+		prx.checkOnce(t.Context(), bck)
+
+		assert.Less(t, time.Since(start), timeout+100*time.Millisecond,
+			"one check must not outlast --health-timeout")
+	}
+
+	assert.True(t, bck.healthy.Load(), "the TCP dial itself fits the deadline")
+	assert.True(t, bck.unready.Load(),
+		"the probe gets what the dial left of the deadline, not a fresh --health-timeout")
 }

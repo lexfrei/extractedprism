@@ -166,6 +166,10 @@ type Proxy struct {
 	mu       sync.RWMutex
 	backends map[string]*backend
 	listener net.Listener
+
+	// dialHealth dials a backend for a health check. Tests replace it to
+	// make the dial take a known share of the check deadline.
+	dialHealth func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // New creates a Proxy. Panics if cfg, logger or metrics is nil.
@@ -184,13 +188,16 @@ func New(cfg *Config, logger *zap.Logger, m *metrics.Metrics) *Proxy {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	dialer := &net.Dialer{}
+
 	return &Proxy{
-		cfg:      *cfg,
-		logger:   logger,
-		metrics:  m,
-		ctx:      ctx,
-		cancel:   cancel,
-		backends: make(map[string]*backend),
+		cfg:        *cfg,
+		logger:     logger,
+		metrics:    m,
+		ctx:        ctx,
+		cancel:     cancel,
+		backends:   make(map[string]*backend),
+		dialHealth: dialer.DialContext,
 	}
 }
 
@@ -483,11 +490,15 @@ func (prx *Proxy) healthLoop(bck *backend, stopHealth <-chan struct{}) {
 	}
 }
 
+// checkOnce runs one health check. A single HealthTimeout deadline covers
+// both the TCP dial and the /readyz probe, so a check never outlasts it.
 func (prx *Proxy) checkOnce(ctx context.Context, bck *backend) {
-	dialer := net.Dialer{Timeout: prx.cfg.HealthTimeout}
+	ctx, cancel := context.WithTimeout(ctx, prx.cfg.HealthTimeout)
+	defer cancel()
+
 	start := time.Now()
 
-	conn, err := dialer.DialContext(ctx, "tcp", bck.addr)
+	conn, err := prx.dialHealth(ctx, "tcp", bck.addr)
 	if err != nil {
 		prx.recordFailure(bck, err)
 
@@ -506,10 +517,8 @@ func (prx *Proxy) checkOnce(ctx context.Context, bck *backend) {
 	}
 }
 
+// checkReady probes /readyz within the deadline of the enclosing check.
 func (prx *Proxy) checkReady(ctx context.Context, bck *backend) {
-	ctx, cancel := context.WithTimeout(ctx, prx.cfg.HealthTimeout)
-	defer cancel()
-
 	err := prx.probeReadyz(ctx, bck.addr)
 	if err != nil {
 		prx.recordNotReady(bck, err)
