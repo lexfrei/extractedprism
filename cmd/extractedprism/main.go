@@ -58,7 +58,7 @@ func registerFlags() {
 	flags.String("log-level", base.LogLevel, "log level (debug, info, warn, error, dpanic, panic, fatal)")
 	flags.Duration("liveness-interval", base.LivenessInterval, "heartbeat probe interval for liveness detection")
 	flags.Duration("liveness-threshold", base.LivenessThreshold, "maximum time since last heartbeat before liveness fails")
-	flags.Duration("drain-timeout", base.DrainTimeout, "grace period for connections to removed endpoints before force close (0 = immediate)")
+	flags.Duration("drain-timeout", base.DrainTimeout, "grace period for connections to removed endpoints, and with readyz to unready ones while another is ready, before force close (0 = immediate)")
 	flags.String("upstream-selection", base.UpstreamSelection, "how new connections pick an upstream (random, latency)")
 	flags.String("health-check", base.HealthCheck, "upstream health check (tcp, readyz); readyz prefers upstreams answering 200 on /readyz")
 	flags.String("health-check-ca-file", "", "CA bundle verifying upstream certificates (required for readyz)")

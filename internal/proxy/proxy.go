@@ -82,7 +82,9 @@ type Config struct {
 	HealthInterval  time.Duration
 	HealthTimeout   time.Duration
 	// DrainTimeout bounds how long a removed backend's existing connections
-	// may finish before being force-closed. Zero closes them immediately.
+	// may finish before being force-closed, and how long an unready
+	// backend keeps them while another is ready. Zero closes them
+	// immediately.
 	DrainTimeout time.Duration
 	// LatencySelection prefers the backends with the lowest smoothed health
 	// check connect time instead of picking uniformly at random.
@@ -132,6 +134,14 @@ type backend struct {
 	// The zero value counts as ready, which is the state in tcp mode.
 	unready       atomic.Bool
 	readyFailures atomic.Int32
+	// probed is set by every probe outcome and cleared by resetReadiness:
+	// only an upstream that has failed a probe since it became reachable
+	// loses its connections, not one whose first probe is still pending.
+	probed atomic.Bool
+	// evictCh is non-nil while an eviction of this unready backend's
+	// connections is scheduled, and is closed to cancel it. Guarded by
+	// Proxy.mu.
+	evictCh chan struct{}
 
 	mu sync.Mutex
 	// conns holds the connections currently proxied to this backend.
@@ -401,6 +411,7 @@ func (prx *Proxy) reconcile(addrs []string) {
 	}
 
 	prx.updateUpstreamMetricsLocked()
+	prx.updateEvictionsLocked()
 }
 
 // drainBackend waits for a removed backend's connections to finish, up to
@@ -571,7 +582,9 @@ func (prx *Proxy) recordNotReady(bck *backend, err error) {
 		return
 	}
 
-	defer prx.publishReadiness(bck)
+	defer prx.onReadinessChange(bck)
+
+	bck.probed.Store(true)
 
 	if bck.readyFailures.Add(1) < healthFailuresToUnhealthy || bck.unready.Swap(true) {
 		return
@@ -585,8 +598,9 @@ func (prx *Proxy) recordReady(bck *backend) {
 		return
 	}
 
-	defer prx.publishReadiness(bck)
+	defer prx.onReadinessChange(bck)
 
+	bck.probed.Store(true)
 	bck.readyFailures.Store(0)
 
 	if !bck.unready.Swap(false) {
@@ -596,14 +610,15 @@ func (prx *Proxy) recordReady(bck *backend) {
 	prx.logger.Info("upstream became ready", zap.String("upstream", bck.addr))
 }
 
-func (prx *Proxy) publishReadiness(bck *backend) {
-	// The series exists only in readyz mode.
+// onReadinessChange publishes the backend's readiness and re-evaluates
+// which unready upstreams lose their connections. A no-op in tcp mode.
+func (prx *Proxy) onReadinessChange(bck *backend) {
 	if prx.cfg.Readiness == nil {
 		return
 	}
 
-	prx.mu.RLock()
-	defer prx.mu.RUnlock()
+	prx.mu.Lock()
+	defer prx.mu.Unlock()
 
 	// Same guard as onHealthChange: a late probe must not resurrect the
 	// series of a removed backend.
@@ -612,6 +627,7 @@ func (prx *Proxy) publishReadiness(bck *backend) {
 	}
 
 	prx.metrics.SetBackendReady(bck.addr, !bck.unready.Load())
+	prx.updateEvictionsLocked()
 }
 
 // recordRTT feeds one successful health check connect time into the
@@ -685,7 +701,7 @@ func (prx *Proxy) recordSuccess(bck *backend) {
 	prx.logger.Info("upstream became healthy", zap.String("upstream", bck.addr))
 	prx.resetReadiness(bck)
 	prx.onHealthChange(bck)
-	prx.publishReadiness(bck)
+	prx.onReadinessChange(bck)
 }
 
 // resetReadiness marks a backend unready until its next probe passes: an
@@ -698,6 +714,7 @@ func (prx *Proxy) resetReadiness(bck *backend) {
 		return
 	}
 
+	bck.probed.Store(false)
 	bck.readyFailures.Store(healthFailuresToUnhealthy - 1)
 	bck.unready.Store(true)
 }
@@ -717,6 +734,7 @@ func (prx *Proxy) onHealthChange(bck *backend) {
 
 	prx.metrics.SetBackendHealth(bck.addr, bck.healthy.Load())
 	prx.updateUpstreamMetricsLocked()
+	prx.updateEvictionsLocked()
 }
 
 // updateUpstreamMetricsLocked refreshes the upstream count gauges.
