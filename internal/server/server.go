@@ -159,7 +159,14 @@ func New(cfg *config.Config, logger *zap.Logger, opts ...Option) (*Server, error
 
 	metricsHandle := metrics.New()
 
-	proxyHandle := proxy.New(proxyConfig(cfg), logger, metricsHandle)
+	proxyCfg := proxyConfig(cfg)
+
+	proxyCfg.Readiness, err = readinessCheck(cfg)
+	if err != nil {
+		return nil, errors.Wrap(err, "build readiness check")
+	}
+
+	proxyHandle := proxy.New(proxyCfg, logger, metricsHandle)
 
 	srv := &Server{
 		cfg:               cfg,
