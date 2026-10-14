@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -138,19 +137,35 @@ func TestCheckOnce_TCPOnly_SendsNoReadyzRequest(t *testing.T) {
 	assert.False(t, bck.unready.Load())
 }
 
-func TestCheckOnce_Readyz_UsesHTTPSAndPath(t *testing.T) {
-	var code atomic.Int32
+func TestCheckOnce_Readyz_SendsGETReadyzOverTLS(t *testing.T) {
+	type seenRequest struct {
+		method, path string
+		overTLS      bool
+	}
 
-	code.Store(http.StatusOK)
-	srv, _ := readyzServer(t, &code)
+	requests := make(chan seenRequest, 1)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- seenRequest{method: r.Method, path: r.URL.Path, overTLS: r.TLS != nil}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
 	prx := newReadinessProxy(t, srv.Client(), nil)
 	bck := newTestBackend(srv.Listener.Addr().String())
 
 	prx.checkOnce(t.Context(), bck)
-	prx.checkOnce(t.Context(), bck)
+
+	select {
+	case got := <-requests:
+		assert.Equal(t, seenRequest{method: http.MethodGet, path: "/readyz", overTLS: true}, got,
+			"the probe is an HTTPS GET of /readyz on the endpoint address")
+	default:
+		require.Fail(t, "the probe sent no request")
+	}
 
 	assert.False(t, bck.unready.Load(), "a TLS upstream answering 200 on /readyz is ready")
-	assert.True(t, strings.HasPrefix(srv.URL, "https://"))
 }
 
 func TestPickBackend_PrefersReadyBackends(t *testing.T) {
@@ -175,7 +190,32 @@ func TestPickBackend_AllUnready_FallsBackToHealthy(t *testing.T) {
 	prx.backends[first.addr] = first
 	prx.backends[second.addr] = second
 
-	assert.NotNil(t, prx.pickBackend(), "with every upstream unready the TCP-healthy ones remain pickable")
+	seen := make(map[*backend]bool)
+
+	for range 200 {
+		bck := prx.pickBackend()
+		require.NotNil(t, bck, "with every upstream unready the TCP-healthy ones remain pickable")
+
+		seen[bck] = true
+	}
+
+	assert.True(t, seen[first] && seen[second], "the fallback spreads over every TCP-healthy upstream, not just one")
+}
+
+func TestPickBackend_ReadyButTCPDead_LosesToUnreadyHealthy(t *testing.T) {
+	prx := newReadinessProxy(t, http.DefaultClient, nil)
+	dead := newTestBackend("192.0.2.1:6443")
+	dead.healthy.Store(false)
+
+	minority := newTestBackend("192.0.2.2:6443")
+	minority.unready.Store(true)
+	prx.backends[dead.addr] = dead
+	prx.backends[minority.addr] = minority
+
+	for range 50 {
+		assert.Same(t, minority, prx.pickBackend(),
+			"readiness only ranks TCP-healthy upstreams; a dead one never wins on an old ready verdict")
+	}
 }
 
 func TestPickBackend_TCPMode_IgnoresReadinessState(t *testing.T) {
