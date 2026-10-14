@@ -182,6 +182,23 @@ func TestReadinessCheck_TokenFileIsReReadAndTrimmed(t *testing.T) {
 	assert.Equal(t, "second", token, "a rotated token must be picked up without a restart")
 }
 
+func TestReadinessCheck_EmptyTokenFile_ReturnsErrEmptyToken(t *testing.T) {
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte(" \n"), 0o600))
+
+	cfg := readyzConfig(writeServerCA(t, srv))
+	cfg.HealthCheckTokenFile = tokenPath
+
+	check, err := readinessCheck(cfg)
+	require.NoError(t, err, "an empty token file fails probes, not startup")
+
+	_, err = check.Token()
+	require.ErrorIs(t, err, errEmptyToken, "an empty token must not be sent as a bare \"Bearer \" header")
+}
+
 func TestReadinessCheck_NoTokenFile_SendsNoToken(t *testing.T) {
 	srv := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)

@@ -13,7 +13,10 @@ import (
 	"github.com/lexfrei/extractedprism/internal/proxy"
 )
 
-var errNoCACertificates = errors.New("health check CA file holds no PEM certificates")
+var (
+	errNoCACertificates = errors.New("health check CA file holds no PEM certificates")
+	errEmptyToken       = errors.New("health check token file is empty")
+)
 
 // readinessCheck builds the /readyz probe from the config, or returns nil for
 // TCP-only health checking. The CA is loaded once at startup. The client
@@ -94,5 +97,10 @@ func readToken(path string) (string, error) {
 		return "", errors.Wrap(err, "read health check token file")
 	}
 
-	return strings.TrimSpace(string(raw)), nil
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", errors.Wrapf(errEmptyToken, "%s", path)
+	}
+
+	return token, nil
 }
