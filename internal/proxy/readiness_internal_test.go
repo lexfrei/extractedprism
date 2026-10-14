@@ -178,6 +178,24 @@ func TestPickBackend_AllUnready_FallsBackToHealthy(t *testing.T) {
 	assert.NotNil(t, prx.pickBackend(), "with every upstream unready the TCP-healthy ones remain pickable")
 }
 
+func TestPickBackend_TCPMode_IgnoresReadinessState(t *testing.T) {
+	prx := newTestProxy(t)
+	first := newTestBackend("192.0.2.1:6443")
+	second := newTestBackend("192.0.2.2:6443")
+	// Never set without a readiness check; the pick must not even look.
+	second.unready.Store(true)
+	prx.backends[first.addr] = first
+	prx.backends[second.addr] = second
+
+	seen := make(map[string]bool)
+
+	for range 200 {
+		seen[prx.pickBackend().addr] = true
+	}
+
+	assert.Len(t, seen, 2, "in tcp mode readiness takes no part in the pick")
+}
+
 func TestPickBackend_UnreadyAndUnhealthyIsNeverPicked(t *testing.T) {
 	prx := newReadinessProxy(t, http.DefaultClient, nil)
 	dead := newTestBackend("192.0.2.1:6443")

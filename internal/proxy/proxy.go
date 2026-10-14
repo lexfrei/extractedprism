@@ -783,7 +783,9 @@ func (prx *Proxy) pickBackend() *backend {
 		}
 	}
 
-	pickable = preferReady(pickable)
+	if prx.cfg.Readiness != nil {
+		pickable = preferReady(pickable)
+	}
 
 	activeTier := noTier
 
