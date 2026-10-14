@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -129,6 +130,33 @@ func TestReadinessCheck_VerifiesUpstreamAgainstCAAndServerName(t *testing.T) {
 	require.Error(t, err, "a certificate not valid for the configured server name must be rejected")
 }
 
+func TestReadinessCheck_DoesNotFollowRedirects(t *testing.T) {
+	var followed atomic.Bool
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ok" {
+			followed.Store(true)
+			w.WriteHeader(http.StatusOK)
+
+			return
+		}
+
+		http.Redirect(w, r, "/ok", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := readyzConfig(writeServerCA(t, srv))
+	cfg.HealthCheckServerName = "example.com"
+
+	check, err := readinessCheck(cfg)
+	require.NoError(t, err)
+
+	status, err := getStatus(t, check.Client, srv.URL+"/readyz")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusFound, status, "the probe must judge the upstream's own answer, not a redirect target")
+	assert.False(t, followed.Load(), "the probe must not follow a redirect")
+}
+
 func TestReadinessCheck_TokenFileIsReReadAndTrimmed(t *testing.T) {
 	srv := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
@@ -152,6 +180,23 @@ func TestReadinessCheck_TokenFileIsReReadAndTrimmed(t *testing.T) {
 	token, err = check.Token()
 	require.NoError(t, err)
 	assert.Equal(t, "second", token, "a rotated token must be picked up without a restart")
+}
+
+func TestReadinessCheck_EmptyTokenFile_ReturnsErrEmptyToken(t *testing.T) {
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte(" \n"), 0o600))
+
+	cfg := readyzConfig(writeServerCA(t, srv))
+	cfg.HealthCheckTokenFile = tokenPath
+
+	check, err := readinessCheck(cfg)
+	require.NoError(t, err, "an empty token file fails probes, not startup")
+
+	_, err = check.Token()
+	require.ErrorIs(t, err, errEmptyToken, "an empty token must not be sent as a bare \"Bearer \" header")
 }
 
 func TestReadinessCheck_NoTokenFile_SendsNoToken(t *testing.T) {

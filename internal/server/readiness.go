@@ -13,7 +13,10 @@ import (
 	"github.com/lexfrei/extractedprism/internal/proxy"
 )
 
-var errNoCACertificates = errors.New("health check CA file holds no PEM certificates")
+var (
+	errNoCACertificates = errors.New("health check CA file holds no PEM certificates")
+	errEmptyToken       = errors.New("health check token file is empty")
+)
 
 // readinessCheck builds the /readyz probe from the config, or returns nil for
 // TCP-only health checking. The CA is loaded once at startup. The client
@@ -37,7 +40,16 @@ func readinessCheck(cfg *config.Config) (*proxy.ReadinessCheck, error) {
 		Proxy: nil,
 	}
 
-	check := &proxy.ReadinessCheck{Client: &http.Client{Transport: transport}}
+	client := &http.Client{
+		Transport: transport,
+		// A redirect is not a 200 from the upstream itself, and following
+		// one could send the token to another URL, possibly over plain HTTP.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	check := &proxy.ReadinessCheck{Client: client}
 
 	if cfg.HealthCheckTokenFile != "" {
 		path := cfg.HealthCheckTokenFile
@@ -85,5 +97,10 @@ func readToken(path string) (string, error) {
 		return "", errors.Wrap(err, "read health check token file")
 	}
 
-	return strings.TrimSpace(string(raw)), nil
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", errors.Wrapf(errEmptyToken, "%s", path)
+	}
+
+	return token, nil
 }

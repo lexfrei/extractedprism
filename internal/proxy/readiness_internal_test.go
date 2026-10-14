@@ -1,9 +1,10 @@
 package proxy
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,19 +137,35 @@ func TestCheckOnce_TCPOnly_SendsNoReadyzRequest(t *testing.T) {
 	assert.False(t, bck.unready.Load())
 }
 
-func TestCheckOnce_Readyz_UsesHTTPSAndPath(t *testing.T) {
-	var code atomic.Int32
+func TestCheckOnce_Readyz_SendsGETReadyzOverTLS(t *testing.T) {
+	type seenRequest struct {
+		method, path string
+		overTLS      bool
+	}
 
-	code.Store(http.StatusOK)
-	srv, _ := readyzServer(t, &code)
+	requests := make(chan seenRequest, 1)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- seenRequest{method: r.Method, path: r.URL.Path, overTLS: r.TLS != nil}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
 	prx := newReadinessProxy(t, srv.Client(), nil)
 	bck := newTestBackend(srv.Listener.Addr().String())
 
 	prx.checkOnce(t.Context(), bck)
-	prx.checkOnce(t.Context(), bck)
+
+	select {
+	case got := <-requests:
+		assert.Equal(t, seenRequest{method: http.MethodGet, path: "/readyz", overTLS: true}, got,
+			"the probe is an HTTPS GET of /readyz on the endpoint address")
+	default:
+		require.Fail(t, "the probe sent no request")
+	}
 
 	assert.False(t, bck.unready.Load(), "a TLS upstream answering 200 on /readyz is ready")
-	assert.True(t, strings.HasPrefix(srv.URL, "https://"))
 }
 
 func TestPickBackend_PrefersReadyBackends(t *testing.T) {
@@ -173,7 +190,50 @@ func TestPickBackend_AllUnready_FallsBackToHealthy(t *testing.T) {
 	prx.backends[first.addr] = first
 	prx.backends[second.addr] = second
 
-	assert.NotNil(t, prx.pickBackend(), "with every upstream unready the TCP-healthy ones remain pickable")
+	seen := make(map[*backend]bool)
+
+	for range 200 {
+		bck := prx.pickBackend()
+		require.NotNil(t, bck, "with every upstream unready the TCP-healthy ones remain pickable")
+
+		seen[bck] = true
+	}
+
+	assert.True(t, seen[first] && seen[second], "the fallback spreads over every TCP-healthy upstream, not just one")
+}
+
+func TestPickBackend_ReadyButTCPDead_LosesToUnreadyHealthy(t *testing.T) {
+	prx := newReadinessProxy(t, http.DefaultClient, nil)
+	dead := newTestBackend("192.0.2.1:6443")
+	dead.healthy.Store(false)
+
+	minority := newTestBackend("192.0.2.2:6443")
+	minority.unready.Store(true)
+	prx.backends[dead.addr] = dead
+	prx.backends[minority.addr] = minority
+
+	for range 50 {
+		assert.Same(t, minority, prx.pickBackend(),
+			"readiness only ranks TCP-healthy upstreams; a dead one never wins on an old ready verdict")
+	}
+}
+
+func TestPickBackend_TCPMode_IgnoresReadinessState(t *testing.T) {
+	prx := newTestProxy(t)
+	first := newTestBackend("192.0.2.1:6443")
+	second := newTestBackend("192.0.2.2:6443")
+	// Never set without a readiness check; the pick must not even look.
+	second.unready.Store(true)
+	prx.backends[first.addr] = first
+	prx.backends[second.addr] = second
+
+	seen := make(map[string]bool)
+
+	for range 200 {
+		seen[prx.pickBackend().addr] = true
+	}
+
+	assert.Len(t, seen, 2, "in tcp mode readiness takes no part in the pick")
 }
 
 func TestPickBackend_UnreadyAndUnhealthyIsNeverPicked(t *testing.T) {
@@ -218,4 +278,112 @@ func TestCheckOnce_Readyz_SkipsMetricOfRemovedBackend(t *testing.T) {
 	prx.checkOnce(t.Context(), bck)
 
 	assert.NotContains(t, scrapeInternal(t, prx.metrics), "extractedprism_upstream_ready{")
+}
+
+func TestRecordSuccess_TCPRecovery_ResetsReadinessUntilNextPassingProbe(t *testing.T) {
+	var code atomic.Int32
+
+	code.Store(http.StatusInternalServerError)
+	srv, _ := readyzServer(t, &code)
+	prx := newReadinessProxy(t, srv.Client(), nil)
+	other := newTestBackend("192.0.2.1:6443")
+	restarted := newTestBackend(srv.Listener.Addr().String())
+	prx.backends[other.addr] = other
+	prx.backends[restarted.addr] = restarted
+
+	// Ready before the outage, then unreachable.
+	restarted.healthy.Store(false)
+	restarted.failures.Store(healthFailuresToUnhealthy)
+
+	prx.recordSuccess(restarted)
+
+	require.True(t, restarted.healthy.Load())
+	assert.True(t, restarted.unready.Load(), "a recovered upstream must not be trusted on its pre-outage verdict")
+
+	for range 50 {
+		require.Same(t, other, prx.pickBackend(), "a recovered upstream gets no picks until a probe passes")
+	}
+
+	prx.checkReady(t.Context(), restarted)
+	assert.True(t, restarted.unready.Load(), "one failed probe after recovery keeps the upstream unready")
+
+	code.Store(http.StatusOK)
+	prx.checkReady(t.Context(), restarted)
+	assert.False(t, restarted.unready.Load(), "one passing probe makes it ready again")
+}
+
+func TestRecordSuccess_TCPMode_LeavesReadinessAlone(t *testing.T) {
+	prx := newTestProxy(t)
+	bck := newTestBackend("192.0.2.1:6443")
+	prx.backends[bck.addr] = bck
+	bck.healthy.Store(false)
+
+	prx.recordSuccess(bck)
+
+	assert.False(t, bck.unready.Load())
+	assert.NotContains(t, scrapeInternal(t, prx.metrics), "extractedprism_upstream_ready{",
+		"the readiness series exists only in readyz mode")
+}
+
+func TestReconcile_Readyz_NewUpstreamStartsUnready(t *testing.T) {
+	prx := newReadinessProxy(t, http.DefaultClient, nil)
+	t.Cleanup(func() { _ = prx.Shutdown(context.Background()) })
+
+	prx.reconcile([]string{"192.0.2.1:6443"})
+
+	prx.mu.RLock()
+	bck := prx.backends["192.0.2.1:6443"]
+	prx.mu.RUnlock()
+
+	require.NotNil(t, bck)
+	assert.True(t, bck.healthy.Load(), "TCP health stays optimistic")
+	assert.True(t, bck.unready.Load(), "readiness waits for the first passing probe")
+}
+
+// slowHealthDial makes the health check dial take delay before connecting,
+// or fail when ctx ends first.
+func slowHealthDial(delay time.Duration) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+
+		dialer := net.Dialer{}
+
+		return dialer.DialContext(ctx, network, addr)
+	}
+}
+
+func TestCheckOnce_Readyz_DialAndProbeShareOneDeadline(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Fits a fresh timeout, but not what the slow dial leaves of it.
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	prx := New(&Config{
+		HealthTimeout:  timeout,
+		HealthInterval: time.Hour,
+		Readiness:      &ReadinessCheck{Client: srv.Client()},
+	}, zap.NewNop(), metrics.New())
+	prx.dialHealth = slowHealthDial(200 * time.Millisecond)
+	bck := newTestBackend(srv.Listener.Addr().String())
+
+	for range healthFailuresToUnhealthy {
+		start := time.Now()
+
+		prx.checkOnce(t.Context(), bck)
+
+		assert.Less(t, time.Since(start), timeout+100*time.Millisecond,
+			"one check must not outlast --health-timeout")
+	}
+
+	assert.True(t, bck.healthy.Load(), "the TCP dial itself fits the deadline")
+	assert.True(t, bck.unready.Load(),
+		"the probe gets what the dial left of the deadline, not a fresh --health-timeout")
 }

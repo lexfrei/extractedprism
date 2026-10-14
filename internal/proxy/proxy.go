@@ -82,7 +82,9 @@ type Config struct {
 	HealthInterval  time.Duration
 	HealthTimeout   time.Duration
 	// DrainTimeout bounds how long a removed backend's existing connections
-	// may finish before being force-closed. Zero closes them immediately.
+	// may finish before being force-closed, and how long an unready
+	// backend keeps them while another is ready. Zero closes them
+	// immediately.
 	DrainTimeout time.Duration
 	// LatencySelection prefers the backends with the lowest smoothed health
 	// check connect time instead of picking uniformly at random.
@@ -128,9 +130,18 @@ type backend struct {
 	stopHealth chan struct{}
 
 	// unready is set after healthFailuresToUnhealthy consecutive failed
-	// readiness probes; the zero value counts as ready.
+	// readiness probes, and by resetReadiness until the next passing probe.
+	// The zero value counts as ready, which is the state in tcp mode.
 	unready       atomic.Bool
 	readyFailures atomic.Int32
+	// probed is set by every probe outcome and cleared by resetReadiness:
+	// only an upstream that has failed a probe since it became reachable
+	// loses its connections, not one whose first probe is still pending.
+	probed atomic.Bool
+	// evictCh is non-nil while an eviction of this unready backend's
+	// connections is scheduled, and is closed to cancel it. Guarded by
+	// Proxy.mu.
+	evictCh chan struct{}
 
 	mu sync.Mutex
 	// conns holds the connections currently proxied to this backend.
@@ -166,6 +177,10 @@ type Proxy struct {
 	mu       sync.RWMutex
 	backends map[string]*backend
 	listener net.Listener
+
+	// dialHealth dials a backend for a health check. Tests replace it to
+	// make the dial take a known share of the check deadline.
+	dialHealth func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // New creates a Proxy. Panics if cfg, logger or metrics is nil.
@@ -184,13 +199,16 @@ func New(cfg *Config, logger *zap.Logger, m *metrics.Metrics) *Proxy {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	dialer := &net.Dialer{}
+
 	return &Proxy{
-		cfg:      *cfg,
-		logger:   logger,
-		metrics:  m,
-		ctx:      ctx,
-		cancel:   cancel,
-		backends: make(map[string]*backend),
+		cfg:        *cfg,
+		logger:     logger,
+		metrics:    m,
+		ctx:        ctx,
+		cancel:     cancel,
+		backends:   make(map[string]*backend),
+		dialHealth: dialer.DialContext,
 	}
 }
 
@@ -364,6 +382,9 @@ func (prx *Proxy) reconcile(addrs []string) {
 			conns:      make(map[*trackedConn]struct{}),
 		}
 		bck.healthy.Store(true) // optimistic: pickable until proven dead
+		// Readiness is not optimistic: a new upstream waits for its first
+		// passing probe, which runs at once.
+		prx.resetReadiness(bck)
 		prx.backends[addr] = bck
 		prx.metrics.SetBackendHealth(addr, true)
 
@@ -390,6 +411,7 @@ func (prx *Proxy) reconcile(addrs []string) {
 	}
 
 	prx.updateUpstreamMetricsLocked()
+	prx.updateEvictionsLocked()
 }
 
 // drainBackend waits for a removed backend's connections to finish, up to
@@ -483,11 +505,15 @@ func (prx *Proxy) healthLoop(bck *backend, stopHealth <-chan struct{}) {
 	}
 }
 
+// checkOnce runs one health check. A single HealthTimeout deadline covers
+// both the TCP dial and the /readyz probe, so a check never outlasts it.
 func (prx *Proxy) checkOnce(ctx context.Context, bck *backend) {
-	dialer := net.Dialer{Timeout: prx.cfg.HealthTimeout}
+	ctx, cancel := context.WithTimeout(ctx, prx.cfg.HealthTimeout)
+	defer cancel()
+
 	start := time.Now()
 
-	conn, err := dialer.DialContext(ctx, "tcp", bck.addr)
+	conn, err := prx.dialHealth(ctx, "tcp", bck.addr)
 	if err != nil {
 		prx.recordFailure(bck, err)
 
@@ -506,10 +532,8 @@ func (prx *Proxy) checkOnce(ctx context.Context, bck *backend) {
 	}
 }
 
+// checkReady probes /readyz within the deadline of the enclosing check.
 func (prx *Proxy) checkReady(ctx context.Context, bck *backend) {
-	ctx, cancel := context.WithTimeout(ctx, prx.cfg.HealthTimeout)
-	defer cancel()
-
 	err := prx.probeReadyz(ctx, bck.addr)
 	if err != nil {
 		prx.recordNotReady(bck, err)
@@ -558,7 +582,9 @@ func (prx *Proxy) recordNotReady(bck *backend, err error) {
 		return
 	}
 
-	defer prx.publishReadiness(bck)
+	defer prx.onReadinessChange(bck)
+
+	bck.probed.Store(true)
 
 	if bck.readyFailures.Add(1) < healthFailuresToUnhealthy || bck.unready.Swap(true) {
 		return
@@ -572,8 +598,9 @@ func (prx *Proxy) recordReady(bck *backend) {
 		return
 	}
 
-	defer prx.publishReadiness(bck)
+	defer prx.onReadinessChange(bck)
 
+	bck.probed.Store(true)
 	bck.readyFailures.Store(0)
 
 	if !bck.unready.Swap(false) {
@@ -583,9 +610,15 @@ func (prx *Proxy) recordReady(bck *backend) {
 	prx.logger.Info("upstream became ready", zap.String("upstream", bck.addr))
 }
 
-func (prx *Proxy) publishReadiness(bck *backend) {
-	prx.mu.RLock()
-	defer prx.mu.RUnlock()
+// onReadinessChange publishes the backend's readiness and re-evaluates
+// which unready upstreams lose their connections. A no-op in tcp mode.
+func (prx *Proxy) onReadinessChange(bck *backend) {
+	if prx.cfg.Readiness == nil {
+		return
+	}
+
+	prx.mu.Lock()
+	defer prx.mu.Unlock()
 
 	// Same guard as onHealthChange: a late probe must not resurrect the
 	// series of a removed backend.
@@ -594,6 +627,7 @@ func (prx *Proxy) publishReadiness(bck *backend) {
 	}
 
 	prx.metrics.SetBackendReady(bck.addr, !bck.unready.Load())
+	prx.updateEvictionsLocked()
 }
 
 // recordRTT feeds one successful health check connect time into the
@@ -665,7 +699,24 @@ func (prx *Proxy) recordSuccess(bck *backend) {
 	}
 
 	prx.logger.Info("upstream became healthy", zap.String("upstream", bck.addr))
+	prx.resetReadiness(bck)
 	prx.onHealthChange(bck)
+	prx.onReadinessChange(bck)
+}
+
+// resetReadiness marks a backend unready until its next probe passes: an
+// upstream that was unreachable, for example a restarted minority API
+// server, must not get new connections on the strength of a verdict from
+// before the outage. One failed probe keeps it unready. A no-op without a
+// readiness check.
+func (prx *Proxy) resetReadiness(bck *backend) {
+	if prx.cfg.Readiness == nil {
+		return
+	}
+
+	bck.probed.Store(false)
+	bck.readyFailures.Store(healthFailuresToUnhealthy - 1)
+	bck.unready.Store(true)
 }
 
 // onHealthChange publishes the backend's current health state. It reads the
@@ -683,6 +734,7 @@ func (prx *Proxy) onHealthChange(bck *backend) {
 
 	prx.metrics.SetBackendHealth(bck.addr, bck.healthy.Load())
 	prx.updateUpstreamMetricsLocked()
+	prx.updateEvictionsLocked()
 }
 
 // updateUpstreamMetricsLocked refreshes the upstream count gauges.
@@ -759,9 +811,12 @@ func inTier(rtt, best time.Duration, wasIn bool) bool {
 
 // pickBackend returns a random pickable backend, or nil when none is
 // available. Draining backends are never picked: they serve existing
-// connections only. With latency selection the pick is limited to the
-// lowest tier that has a pickable sampled backend, plus pickable backends
-// without a sample.
+// connections only. With a readiness check the candidates are narrowed to
+// the ready backends first, unless none is ready. With latency selection
+// the pick is then limited to the lowest tier that has a remaining sampled
+// backend, plus remaining backends without a sample: readiness comes
+// before latency, so a ready backend in a farther tier wins over an unready
+// one in a closer tier.
 func (prx *Proxy) pickBackend() *backend {
 	prx.mu.RLock()
 	defer prx.mu.RUnlock()
@@ -774,7 +829,9 @@ func (prx *Proxy) pickBackend() *backend {
 		}
 	}
 
-	pickable = preferReady(pickable)
+	if prx.cfg.Readiness != nil {
+		pickable = preferReady(pickable)
+	}
 
 	activeTier := noTier
 

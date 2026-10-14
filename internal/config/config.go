@@ -88,7 +88,9 @@ type Config struct {
 	LivenessInterval  time.Duration
 	LivenessThreshold time.Duration
 	// DrainTimeout bounds how long connections to a removed endpoint may
-	// finish before being force-closed. Zero closes them immediately.
+	// finish before being force-closed, and with HealthCheckReadyz how long
+	// an unready endpoint keeps them while another is ready. Zero closes
+	// them immediately.
 	DrainTimeout time.Duration
 	// UpstreamSelection is UpstreamSelectionRandom or UpstreamSelectionLatency.
 	UpstreamSelection string

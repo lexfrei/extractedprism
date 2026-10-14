@@ -81,9 +81,9 @@ func New() *Metrics {
 		backendRTT: newUpstreamGaugeVec("upstream_rtt_seconds",
 			"Smoothed connect time of successful health checks, including name resolution for hostname endpoints. Only exported with --upstream-selection=latency, after the first successful check."),
 		backendTier: newUpstreamGaugeVec("upstream_latency_tier",
-			"Latency tier of the upstream, 0 being the closest group. New connections go to the lowest tier with a healthy, non-draining upstream, together with upstreams that have no sample yet. Only exported with --upstream-selection=latency, after the first successful check."),
+			"Latency tier of the upstream, 0 being the closest group. New connections go to the lowest tier with a healthy, non-draining upstream (with --health-check=readyz, a ready one while any is ready), together with upstreams that have no sample yet. Only exported with --upstream-selection=latency, after the first successful check."),
 		backendReady: newUpstreamGaugeVec("upstream_ready",
-			"Upstream readiness after the consecutive-failure threshold of /readyz probes (1 ready, 0 not ready). New connections prefer ready upstreams. Only exported with --health-check=readyz, after the first probe."),
+			"Upstream readiness after the consecutive-failure threshold of /readyz probes (1 ready, 0 not ready). New connections prefer ready upstreams, and an unready upstream loses its connections while another is ready. Only exported with --health-check=readyz, after the first probe."),
 	}
 
 	m.register()
