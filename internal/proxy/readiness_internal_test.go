@@ -240,6 +240,66 @@ func TestCheckOnce_Readyz_SkipsMetricOfRemovedBackend(t *testing.T) {
 	assert.NotContains(t, scrapeInternal(t, prx.metrics), "extractedprism_upstream_ready{")
 }
 
+func TestRecordSuccess_TCPRecovery_ResetsReadinessUntilNextPassingProbe(t *testing.T) {
+	var code atomic.Int32
+
+	code.Store(http.StatusInternalServerError)
+	srv, _ := readyzServer(t, &code)
+	prx := newReadinessProxy(t, srv.Client(), nil)
+	other := newTestBackend("192.0.2.1:6443")
+	restarted := newTestBackend(srv.Listener.Addr().String())
+	prx.backends[other.addr] = other
+	prx.backends[restarted.addr] = restarted
+
+	// Ready before the outage, then unreachable.
+	restarted.healthy.Store(false)
+	restarted.failures.Store(healthFailuresToUnhealthy)
+
+	prx.recordSuccess(restarted)
+
+	require.True(t, restarted.healthy.Load())
+	assert.True(t, restarted.unready.Load(), "a recovered upstream must not be trusted on its pre-outage verdict")
+
+	for range 50 {
+		require.Same(t, other, prx.pickBackend(), "a recovered upstream gets no picks until a probe passes")
+	}
+
+	prx.checkReady(t.Context(), restarted)
+	assert.True(t, restarted.unready.Load(), "one failed probe after recovery keeps the upstream unready")
+
+	code.Store(http.StatusOK)
+	prx.checkReady(t.Context(), restarted)
+	assert.False(t, restarted.unready.Load(), "one passing probe makes it ready again")
+}
+
+func TestRecordSuccess_TCPMode_LeavesReadinessAlone(t *testing.T) {
+	prx := newTestProxy(t)
+	bck := newTestBackend("192.0.2.1:6443")
+	prx.backends[bck.addr] = bck
+	bck.healthy.Store(false)
+
+	prx.recordSuccess(bck)
+
+	assert.False(t, bck.unready.Load())
+	assert.NotContains(t, scrapeInternal(t, prx.metrics), "extractedprism_upstream_ready{",
+		"the readiness series exists only in readyz mode")
+}
+
+func TestReconcile_Readyz_NewUpstreamStartsUnready(t *testing.T) {
+	prx := newReadinessProxy(t, http.DefaultClient, nil)
+	t.Cleanup(func() { _ = prx.Shutdown(context.Background()) })
+
+	prx.reconcile([]string{"192.0.2.1:6443"})
+
+	prx.mu.RLock()
+	bck := prx.backends["192.0.2.1:6443"]
+	prx.mu.RUnlock()
+
+	require.NotNil(t, bck)
+	assert.True(t, bck.healthy.Load(), "TCP health stays optimistic")
+	assert.True(t, bck.unready.Load(), "readiness waits for the first passing probe")
+}
+
 // slowHealthDial makes the health check dial take delay before connecting,
 // or fail when ctx ends first.
 func slowHealthDial(delay time.Duration) func(ctx context.Context, network, addr string) (net.Conn, error) {

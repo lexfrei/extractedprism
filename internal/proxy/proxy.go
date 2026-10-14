@@ -128,7 +128,8 @@ type backend struct {
 	stopHealth chan struct{}
 
 	// unready is set after healthFailuresToUnhealthy consecutive failed
-	// readiness probes; the zero value counts as ready.
+	// readiness probes, and by resetReadiness until the next passing probe.
+	// The zero value counts as ready, which is the state in tcp mode.
 	unready       atomic.Bool
 	readyFailures atomic.Int32
 
@@ -371,6 +372,9 @@ func (prx *Proxy) reconcile(addrs []string) {
 			conns:      make(map[*trackedConn]struct{}),
 		}
 		bck.healthy.Store(true) // optimistic: pickable until proven dead
+		// Readiness is not optimistic: a new upstream waits for its first
+		// passing probe, which runs at once.
+		prx.resetReadiness(bck)
 		prx.backends[addr] = bck
 		prx.metrics.SetBackendHealth(addr, true)
 
@@ -593,6 +597,11 @@ func (prx *Proxy) recordReady(bck *backend) {
 }
 
 func (prx *Proxy) publishReadiness(bck *backend) {
+	// The series exists only in readyz mode.
+	if prx.cfg.Readiness == nil {
+		return
+	}
+
 	prx.mu.RLock()
 	defer prx.mu.RUnlock()
 
@@ -674,7 +683,23 @@ func (prx *Proxy) recordSuccess(bck *backend) {
 	}
 
 	prx.logger.Info("upstream became healthy", zap.String("upstream", bck.addr))
+	prx.resetReadiness(bck)
 	prx.onHealthChange(bck)
+	prx.publishReadiness(bck)
+}
+
+// resetReadiness marks a backend unready until its next probe passes: an
+// upstream that was unreachable, for example a restarted minority API
+// server, must not get new connections on the strength of a verdict from
+// before the outage. One failed probe keeps it unready. A no-op without a
+// readiness check.
+func (prx *Proxy) resetReadiness(bck *backend) {
+	if prx.cfg.Readiness == nil {
+		return
+	}
+
+	bck.readyFailures.Store(healthFailuresToUnhealthy - 1)
+	bck.unready.Store(true)
 }
 
 // onHealthChange publishes the backend's current health state. It reads the
