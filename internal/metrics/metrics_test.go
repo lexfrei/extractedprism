@@ -160,3 +160,23 @@ func TestRemoveBackend_DeletesLatencySeries(t *testing.T) {
 	assert.Contains(t, body, `extractedprism_upstream_rtt_seconds{upstream="192.0.2.2:6443"}`,
 		"other upstreams keep their series")
 }
+
+func TestSetBackendReady_ExportsState(t *testing.T) {
+	m := metrics.New()
+
+	m.SetBackendReady("192.0.2.1:6443", true)
+	m.SetBackendReady("192.0.2.2:6443", false)
+
+	body := scrape(t, m)
+	assert.Contains(t, body, `extractedprism_upstream_ready{upstream="192.0.2.1:6443"} 1`)
+	assert.Contains(t, body, `extractedprism_upstream_ready{upstream="192.0.2.2:6443"} 0`)
+}
+
+func TestRemoveBackend_DeletesReadySeries(t *testing.T) {
+	m := metrics.New()
+
+	m.SetBackendReady("192.0.2.1:6443", true)
+	m.RemoveBackend("192.0.2.1:6443")
+
+	assert.NotContains(t, scrape(t, m), `extractedprism_upstream_ready{upstream="192.0.2.1:6443"}`)
+}
