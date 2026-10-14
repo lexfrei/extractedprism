@@ -116,3 +116,41 @@ func TestRegisterFlags_UpstreamSelectionDefaultsToRandom(t *testing.T) {
 	require.NotNil(t, flag, "--upstream-selection must be registered")
 	assert.Equal(t, "random", flag.DefValue)
 }
+
+func TestBuildConfig_HealthCheckFromViper(t *testing.T) {
+	setValidViperDefaults()
+	t.Cleanup(viper.Reset)
+
+	viper.Set("health_check", "readyz")
+	viper.Set("health_check_ca_file", "/ca.crt")
+	viper.Set("health_check_cert_file", "/client.crt")
+	viper.Set("health_check_key_file", "/client.key")
+	viper.Set("health_check_token_file", "/token")
+	viper.Set("health_check_server_name", "api.example")
+
+	cfg := buildConfig()
+	assert.Equal(t, "readyz", cfg.HealthCheck)
+	assert.Equal(t, "/ca.crt", cfg.HealthCheckCAFile)
+	assert.Equal(t, "/client.crt", cfg.HealthCheckCertFile)
+	assert.Equal(t, "/client.key", cfg.HealthCheckKeyFile)
+	assert.Equal(t, "/token", cfg.HealthCheckTokenFile)
+	assert.Equal(t, "api.example", cfg.HealthCheckServerName)
+}
+
+func TestRegisterFlags_HealthCheckDefaults(t *testing.T) {
+	flags := rootCmd.PersistentFlags()
+
+	mode := flags.Lookup("health-check")
+	require.NotNil(t, mode, "--health-check must be registered")
+	assert.Equal(t, "tcp", mode.DefValue)
+
+	name := flags.Lookup("health-check-server-name")
+	require.NotNil(t, name, "--health-check-server-name must be registered")
+	assert.Equal(t, "kubernetes.default.svc", name.DefValue)
+
+	for _, flagName := range []string{"health-check-ca-file", "health-check-cert-file", "health-check-key-file", "health-check-token-file"} {
+		flag := flags.Lookup(flagName)
+		require.NotNil(t, flag, "--%s must be registered", flagName)
+		assert.Empty(t, flag.DefValue)
+	}
+}

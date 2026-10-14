@@ -60,6 +60,12 @@ func registerFlags() {
 	flags.Duration("liveness-threshold", base.LivenessThreshold, "maximum time since last heartbeat before liveness fails")
 	flags.Duration("drain-timeout", base.DrainTimeout, "grace period for connections to removed endpoints before force close (0 = immediate)")
 	flags.String("upstream-selection", base.UpstreamSelection, "how new connections pick an upstream (random, latency)")
+	flags.String("health-check", base.HealthCheck, "upstream health check (tcp, readyz); readyz prefers upstreams answering 200 on /readyz")
+	flags.String("health-check-ca-file", "", "CA bundle verifying upstream certificates (required for readyz)")
+	flags.String("health-check-cert-file", "", "client certificate for the readyz probe")
+	flags.String("health-check-key-file", "", "client key for the readyz probe")
+	flags.String("health-check-token-file", "", "bearer token file for the readyz probe, re-read on every probe")
+	flags.String("health-check-server-name", base.HealthCheckServerName, "TLS server name verified on upstream certificates")
 }
 
 func bindEnvVars() {
@@ -80,6 +86,12 @@ func bindEnvVars() {
 	mustBindPFlag("liveness_threshold", flags.Lookup("liveness-threshold"))
 	mustBindPFlag("drain_timeout", flags.Lookup("drain-timeout"))
 	mustBindPFlag("upstream_selection", flags.Lookup("upstream-selection"))
+	mustBindPFlag("health_check", flags.Lookup("health-check"))
+	mustBindPFlag("health_check_ca_file", flags.Lookup("health-check-ca-file"))
+	mustBindPFlag("health_check_cert_file", flags.Lookup("health-check-cert-file"))
+	mustBindPFlag("health_check_key_file", flags.Lookup("health-check-key-file"))
+	mustBindPFlag("health_check_token_file", flags.Lookup("health-check-token-file"))
+	mustBindPFlag("health_check_server_name", flags.Lookup("health-check-server-name"))
 
 	viper.AutomaticEnv()
 }
@@ -146,6 +158,12 @@ func buildConfig() *config.Config {
 	cfg.LivenessThreshold = viper.GetDuration("liveness_threshold")
 	cfg.DrainTimeout = viper.GetDuration("drain_timeout")
 	cfg.UpstreamSelection = viper.GetString("upstream_selection")
+	cfg.HealthCheck = viper.GetString("health_check")
+	cfg.HealthCheckCAFile = viper.GetString("health_check_ca_file")
+	cfg.HealthCheckCertFile = viper.GetString("health_check_cert_file")
+	cfg.HealthCheckKeyFile = viper.GetString("health_check_key_file")
+	cfg.HealthCheckTokenFile = viper.GetString("health_check_token_file")
+	cfg.HealthCheckServerName = viper.GetString("health_check_server_name")
 
 	return cfg
 }
