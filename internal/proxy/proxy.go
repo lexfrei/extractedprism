@@ -811,9 +811,12 @@ func inTier(rtt, best time.Duration, wasIn bool) bool {
 
 // pickBackend returns a random pickable backend, or nil when none is
 // available. Draining backends are never picked: they serve existing
-// connections only. With latency selection the pick is limited to the
-// lowest tier that has a pickable sampled backend, plus pickable backends
-// without a sample.
+// connections only. With a readiness check the candidates are narrowed to
+// the ready backends first, unless none is ready. With latency selection
+// the pick is then limited to the lowest tier that has a remaining sampled
+// backend, plus remaining backends without a sample: readiness comes
+// before latency, so a ready backend in a farther tier wins over an unready
+// one in a closer tier.
 func (prx *Proxy) pickBackend() *backend {
 	prx.mu.RLock()
 	defer prx.mu.RUnlock()
