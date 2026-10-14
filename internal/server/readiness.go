@@ -37,7 +37,16 @@ func readinessCheck(cfg *config.Config) (*proxy.ReadinessCheck, error) {
 		Proxy: nil,
 	}
 
-	check := &proxy.ReadinessCheck{Client: &http.Client{Transport: transport}}
+	client := &http.Client{
+		Transport: transport,
+		// A redirect is not a 200 from the upstream itself, and following
+		// one could send the token to another URL, possibly over plain HTTP.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	check := &proxy.ReadinessCheck{Client: client}
 
 	if cfg.HealthCheckTokenFile != "" {
 		path := cfg.HealthCheckTokenFile

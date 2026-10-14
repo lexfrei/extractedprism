@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,6 +128,33 @@ func TestReadinessCheck_VerifiesUpstreamAgainstCAAndServerName(t *testing.T) {
 
 	_, err = getStatus(t, check.Client, srv.URL+"/readyz")
 	require.Error(t, err, "a certificate not valid for the configured server name must be rejected")
+}
+
+func TestReadinessCheck_DoesNotFollowRedirects(t *testing.T) {
+	var followed atomic.Bool
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ok" {
+			followed.Store(true)
+			w.WriteHeader(http.StatusOK)
+
+			return
+		}
+
+		http.Redirect(w, r, "/ok", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := readyzConfig(writeServerCA(t, srv))
+	cfg.HealthCheckServerName = "example.com"
+
+	check, err := readinessCheck(cfg)
+	require.NoError(t, err)
+
+	status, err := getStatus(t, check.Client, srv.URL+"/readyz")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusFound, status, "the probe must judge the upstream's own answer, not a redirect target")
+	assert.False(t, followed.Load(), "the probe must not follow a redirect")
 }
 
 func TestReadinessCheck_TokenFileIsReReadAndTrimmed(t *testing.T) {
