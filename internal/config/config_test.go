@@ -826,3 +826,53 @@ func TestValidate_UpstreamSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestNewBaseConfig_HealthCheckDefaultsToTCP(t *testing.T) {
+	cfg := config.NewBaseConfig()
+	assert.Equal(t, config.HealthCheckTCP, cfg.HealthCheck)
+	assert.Equal(t, "kubernetes.default.svc", cfg.HealthCheckServerName)
+}
+
+func TestValidate_HealthCheck(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		caFile     string
+		certFile   string
+		keyFile    string
+		serverName string
+		wantErr    error
+	}{
+		{name: "tcp needs no credentials", mode: "tcp", serverName: "kubernetes.default.svc", wantErr: nil},
+		{name: "tcp ignores readyz settings", mode: "tcp", certFile: "/c", serverName: "", wantErr: nil},
+		{name: "readyz with CA is valid", mode: "readyz", caFile: "/ca", serverName: "kubernetes.default.svc", wantErr: nil},
+		{name: "readyz with CA and client cert pair is valid", mode: "readyz", caFile: "/ca", certFile: "/c", keyFile: "/k", serverName: "kubernetes.default.svc", wantErr: nil},
+		{name: "readyz without CA returns ErrHealthCheckCARequired", mode: "readyz", serverName: "kubernetes.default.svc", wantErr: config.ErrHealthCheckCARequired},
+		{name: "readyz with cert but no key returns ErrHealthCheckClientCertIncomplete", mode: "readyz", caFile: "/ca", certFile: "/c", serverName: "kubernetes.default.svc", wantErr: config.ErrHealthCheckClientCertIncomplete},
+		{name: "readyz with key but no cert returns ErrHealthCheckClientCertIncomplete", mode: "readyz", caFile: "/ca", keyFile: "/k", serverName: "kubernetes.default.svc", wantErr: config.ErrHealthCheckClientCertIncomplete},
+		{name: "readyz with empty server name returns ErrInvalidHealthCheckServerName", mode: "readyz", caFile: "/ca", serverName: "", wantErr: config.ErrInvalidHealthCheckServerName},
+		{name: "empty mode returns ErrInvalidHealthCheck", mode: "", wantErr: config.ErrInvalidHealthCheck},
+		{name: "unknown mode returns ErrInvalidHealthCheck", mode: "http", wantErr: config.ErrInvalidHealthCheck},
+		{name: "mode names are case sensitive", mode: "READYZ", caFile: "/ca", serverName: "kubernetes.default.svc", wantErr: config.ErrInvalidHealthCheck},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validTestConfig()
+			cfg.HealthCheck = tt.mode
+			cfg.HealthCheckCAFile = tt.caFile
+			cfg.HealthCheckCertFile = tt.certFile
+			cfg.HealthCheckKeyFile = tt.keyFile
+			cfg.HealthCheckServerName = tt.serverName
+
+			err := cfg.Validate()
+
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.True(t, errors.Is(err, tt.wantErr))
+			}
+		})
+	}
+}
