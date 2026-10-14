@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"net/http"
 	"slices"
 	"strconv"
 	"sync"
@@ -33,6 +34,10 @@ const (
 	// noUpstreamLabel is the upstream label value recorded when a connection
 	// fails because no backend was available to dial.
 	noUpstreamLabel = "none"
+
+	// readyzBodyLimit bounds how much of a /readyz body is read to reuse
+	// the connection; the verdict comes from the status code alone.
+	readyzBodyLimit = 64 << 10
 
 	// rttWeight is the EWMA weight of a new connect time sample.
 	rttWeight = 0.3
@@ -62,6 +67,10 @@ const (
 	noTier = -1
 )
 
+// ErrUpstreamNotReady reports a /readyz probe that answered with a status
+// other than 200.
+var ErrUpstreamNotReady = errors.New("upstream not ready")
+
 // Config holds the proxy configuration. Values are expected to be validated
 // by the config package before construction.
 type Config struct {
@@ -78,6 +87,20 @@ type Config struct {
 	// LatencySelection prefers the backends with the lowest smoothed health
 	// check connect time instead of picking uniformly at random.
 	LatencySelection bool
+	// Readiness, when set, probes /readyz after every successful TCP health
+	// check. Nil keeps TCP-only health checking.
+	Readiness *ReadinessCheck
+}
+
+// ReadinessCheck probes an upstream's GET /readyz over HTTPS. An upstream
+// that accepts TCP but fails the probe (for example a kube-apiserver whose
+// etcd member has no leader) is picked only while no upstream passes it, so
+// a quorum loss everywhere still leaves the TCP-healthy ones as a path.
+type ReadinessCheck struct {
+	// Client carries the TLS settings (CA, server name, client certificate).
+	Client *http.Client
+	// Token returns a bearer token for the probe; nil sends none.
+	Token func() (string, error)
 }
 
 // trackedConn is one proxied connection: the accepted client side and the
@@ -103,6 +126,11 @@ type backend struct {
 	draining   atomic.Bool
 	failures   atomic.Int32
 	stopHealth chan struct{}
+
+	// unready is set after healthFailuresToUnhealthy consecutive failed
+	// readiness probes; the zero value counts as ready.
+	unready       atomic.Bool
+	readyFailures atomic.Int32
 
 	mu sync.Mutex
 	// conns holds the connections currently proxied to this backend.
@@ -472,6 +500,100 @@ func (prx *Proxy) checkOnce(ctx context.Context, bck *backend) {
 
 	prx.recordSuccess(bck)
 	prx.recordRTT(bck, connectTime)
+
+	if prx.cfg.Readiness != nil {
+		prx.checkReady(ctx, bck)
+	}
+}
+
+func (prx *Proxy) checkReady(ctx context.Context, bck *backend) {
+	ctx, cancel := context.WithTimeout(ctx, prx.cfg.HealthTimeout)
+	defer cancel()
+
+	err := prx.probeReadyz(ctx, bck.addr)
+	if err != nil {
+		prx.recordNotReady(bck, err)
+
+		return
+	}
+
+	prx.recordReady(bck)
+}
+
+func (prx *Proxy) probeReadyz(ctx context.Context, addr string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+addr+"/readyz", http.NoBody)
+	if err != nil {
+		return errors.Wrap(err, "build readyz request")
+	}
+
+	if prx.cfg.Readiness.Token != nil {
+		token, tokenErr := prx.cfg.Readiness.Token()
+		if tokenErr != nil {
+			return errors.Wrap(tokenErr, "read readyz token")
+		}
+
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := prx.cfg.Readiness.Client.Do(req)
+	if err != nil {
+		return errors.Wrap(err, "readyz request")
+	}
+
+	defer resp.Body.Close()
+
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, readyzBodyLimit))
+
+	if resp.StatusCode != http.StatusOK {
+		return errors.Wrapf(ErrUpstreamNotReady, "readyz status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// recordNotReady and recordReady mirror recordFailure and recordSuccess for
+// the readiness state, with the same threshold and shutdown guard.
+func (prx *Proxy) recordNotReady(bck *backend, err error) {
+	if prx.ctx.Err() != nil {
+		return
+	}
+
+	defer prx.publishReadiness(bck)
+
+	if bck.readyFailures.Add(1) < healthFailuresToUnhealthy || bck.unready.Swap(true) {
+		return
+	}
+
+	prx.logger.Warn("upstream became unready", zap.String("upstream", bck.addr), zap.Error(err))
+}
+
+func (prx *Proxy) recordReady(bck *backend) {
+	if prx.ctx.Err() != nil {
+		return
+	}
+
+	defer prx.publishReadiness(bck)
+
+	bck.readyFailures.Store(0)
+
+	if !bck.unready.Swap(false) {
+		return
+	}
+
+	prx.logger.Info("upstream became ready", zap.String("upstream", bck.addr))
+}
+
+func (prx *Proxy) publishReadiness(bck *backend) {
+	prx.mu.RLock()
+	defer prx.mu.RUnlock()
+
+	// Same guard as onHealthChange: a late probe must not resurrect the
+	// series of a removed backend.
+	if prx.backends[bck.addr] != bck {
+		return
+	}
+
+	prx.metrics.SetBackendReady(bck.addr, !bck.unready.Load())
 }
 
 // recordRTT feeds one successful health check connect time into the
@@ -646,15 +768,17 @@ func (prx *Proxy) pickBackend() *backend {
 
 	var pickable []*backend
 
+	for _, bck := range prx.backends {
+		if bck.pickable() {
+			pickable = append(pickable, bck)
+		}
+	}
+
+	pickable = preferReady(pickable)
+
 	activeTier := noTier
 
-	for _, bck := range prx.backends {
-		if !bck.pickable() {
-			continue
-		}
-
-		pickable = append(pickable, bck)
-
+	for _, bck := range pickable {
 		if bck.sampled && (activeTier == noTier || bck.tier < activeTier) {
 			activeTier = bck.tier
 		}
@@ -672,6 +796,24 @@ func (prx *Proxy) pickBackend() *backend {
 
 	//nolint:gosec // load balancing pick is not security-sensitive
 	return pickable[rand.IntN(len(pickable))]
+}
+
+// preferReady narrows the candidates to the ready ones when any exist and
+// returns them unchanged otherwise, so readiness never empties the pick.
+func preferReady(pickable []*backend) []*backend {
+	ready := make([]*backend, 0, len(pickable))
+
+	for _, bck := range pickable {
+		if !bck.unready.Load() {
+			ready = append(ready, bck)
+		}
+	}
+
+	if len(ready) == 0 {
+		return pickable
+	}
+
+	return ready
 }
 
 func (prx *Proxy) handleConn(client net.Conn) {

@@ -27,6 +27,16 @@ const (
 	// smoothed health check connect time.
 	UpstreamSelectionLatency = "latency"
 
+	// HealthCheckTCP marks an upstream healthy when a TCP connect succeeds.
+	HealthCheckTCP = "tcp"
+	// HealthCheckReadyz additionally probes GET /readyz over HTTPS and
+	// prefers upstreams that answer 200, so an apiserver that accepts
+	// connections but cannot serve (its etcd member has no leader) is
+	// avoided while a ready one exists.
+	HealthCheckReadyz = "readyz"
+
+	defaultHealthCheckServerName = "kubernetes.default.svc"
+
 	minPort = 1
 	maxPort = 65535
 )
@@ -46,6 +56,11 @@ var (
 	ErrInvalidHealthBindAddress = errors.New("invalid health bind address")
 	ErrInvalidDrainTimeout      = errors.New("drain timeout must not be negative")
 	ErrInvalidUpstreamSelection = errors.New("invalid upstream selection")
+
+	ErrInvalidHealthCheck              = errors.New("invalid health check")
+	ErrHealthCheckCARequired           = errors.New("readyz health check requires a CA file")
+	ErrHealthCheckClientCertIncomplete = errors.New("health check client certificate and key must be set together")
+	ErrInvalidHealthCheckServerName    = errors.New("readyz health check requires a TLS server name")
 )
 
 const minDuration = 1 * time.Second
@@ -77,6 +92,21 @@ type Config struct {
 	DrainTimeout time.Duration
 	// UpstreamSelection is UpstreamSelectionRandom or UpstreamSelectionLatency.
 	UpstreamSelection string
+	// HealthCheck is HealthCheckTCP or HealthCheckReadyz. The fields below
+	// are used by HealthCheckReadyz only.
+	HealthCheck string
+	// HealthCheckCAFile verifies the upstream serving certificate.
+	HealthCheckCAFile string
+	// HealthCheckCertFile and HealthCheckKeyFile authenticate the probe with
+	// a client certificate; set both or neither.
+	HealthCheckCertFile string
+	HealthCheckKeyFile  string
+	// HealthCheckTokenFile, when set, is re-read on every probe and sent as a
+	// bearer token, so a rotated token is picked up without a restart.
+	HealthCheckTokenFile string
+	// HealthCheckServerName is the TLS server name verified against the
+	// upstream certificate; endpoints are usually bare IPs.
+	HealthCheckServerName string
 }
 
 // NewBaseConfig returns a Config populated with sensible defaults for optional
@@ -95,6 +125,9 @@ func NewBaseConfig() *Config {
 		LivenessThreshold: defaultLivenessThreshold,
 		DrainTimeout:      defaultDrainTimeout,
 		UpstreamSelection: UpstreamSelectionRandom,
+
+		HealthCheck:           HealthCheckTCP,
+		HealthCheckServerName: defaultHealthCheckServerName,
 	}
 }
 
@@ -169,7 +202,41 @@ func (cfg *Config) Validate() error {
 		return errors.Wrapf(ErrInvalidDrainTimeout, "drain timeout %s", cfg.DrainTimeout)
 	}
 
-	return validateUpstreamSelection(cfg.UpstreamSelection)
+	return cfg.validateUpstreamPolicy()
+}
+
+func (cfg *Config) validateUpstreamPolicy() error {
+	err := validateUpstreamSelection(cfg.UpstreamSelection)
+	if err != nil {
+		return err
+	}
+
+	return cfg.validateHealthCheck()
+}
+
+func (cfg *Config) validateHealthCheck() error {
+	switch cfg.HealthCheck {
+	case HealthCheckTCP:
+		return nil
+	case HealthCheckReadyz:
+	default:
+		return errors.Wrapf(ErrInvalidHealthCheck, "%q: must be %s or %s",
+			cfg.HealthCheck, HealthCheckTCP, HealthCheckReadyz)
+	}
+
+	if cfg.HealthCheckCAFile == "" {
+		return ErrHealthCheckCARequired
+	}
+
+	if (cfg.HealthCheckCertFile == "") != (cfg.HealthCheckKeyFile == "") {
+		return ErrHealthCheckClientCertIncomplete
+	}
+
+	if cfg.HealthCheckServerName == "" {
+		return ErrInvalidHealthCheckServerName
+	}
+
+	return nil
 }
 
 func validateUpstreamSelection(selection string) error {

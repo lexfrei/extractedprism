@@ -142,6 +142,12 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 | `--liveness-threshold` | `EP_LIVENESS_THRESHOLD` | `15s` | Maximum time since last heartbeat before liveness fails |
 | `--drain-timeout` | `EP_DRAIN_TIMEOUT` | `30s` | Grace period for connections to removed endpoints before force close (`0` closes immediately) |
 | `--upstream-selection` | `EP_UPSTREAM_SELECTION` | `random` | How new connections pick an upstream: `random` (uniform among pickable upstreams) or `latency` (prefer the lowest-latency tier, see below) |
+| `--health-check` | `EP_HEALTH_CHECK` | `tcp` | Upstream health check: `tcp` (connect only) or `readyz` (connect, then prefer upstreams answering `200` on `GET /readyz`, see below) |
+| `--health-check-ca-file` | `EP_HEALTH_CHECK_CA_FILE` | | CA bundle that verifies the upstream serving certificates; required with `readyz` |
+| `--health-check-cert-file` | `EP_HEALTH_CHECK_CERT_FILE` | | Client certificate for the `readyz` probe |
+| `--health-check-key-file` | `EP_HEALTH_CHECK_KEY_FILE` | | Client key for the `readyz` probe; may be the same file as the certificate |
+| `--health-check-token-file` | `EP_HEALTH_CHECK_TOKEN_FILE` | | Bearer token for the `readyz` probe |
+| `--health-check-server-name` | `EP_HEALTH_CHECK_SERVER_NAME` | `kubernetes.default.svc` | Name the upstream serving certificates are verified against |
 
 ### Validation rules
 
@@ -155,6 +161,9 @@ All flags are bound to environment variables with the `EP_` prefix. For example,
 - `--liveness-threshold` must be greater than `--liveness-interval`
 - `--drain-timeout` must not be negative
 - `--upstream-selection` must be `random` or `latency`
+- `--health-check` must be `tcp` or `readyz`; `readyz` requires `--health-check-ca-file`
+- `--health-check-cert-file` and `--health-check-key-file` must be set together
+- `--health-check-server-name` must not be empty
 
 ## Examples
 
@@ -179,6 +188,14 @@ When an endpoint disappears from the upstream list (node cordon, API server roll
 ### Latency-aware selection
 
 With `--upstream-selection=latency`, every successful health check feeds its connect time into a smoothed average (EWMA) per upstream; failed checks do not. For an endpoint given as a hostname, the connect time includes name resolution. Each sample is capped at four times the current average (but never below 2ms), so one slow check, such as a retransmitted SYN, moves the average by a bounded step instead of jumping to the retransmission time, while a lasting increase still shows up within a few checks. A sample below a quarter of the average replaces it, so a first check that took more than four times the usual connect time is undone by the next normal one. Upstreams with a sample are grouped into tiers by latency alone, healthy or not: tier 0 holds every upstream whose average is at most `max(best + 2ms, 2 × best)`, where `best` is the lowest average of all; tier 1 applies the same rule to the rest, and so on. An upstream leaves its tier only when its average exceeds the limit by a further 25%, so an upstream near the boundary does not flap. Membership follows the group rather than the tier number, so a tier appearing or disappearing above does not split a group. New connections are picked at random among the pickable upstreams of the lowest tier that has one, together with pickable upstreams that have no sample yet. Unhealthy and draining upstreams keep their tier, so losing some upstreams of a tier does not let a lower tier in, and losing all of them hands over to the next tier. An upstream removed from the endpoint list leaves the tiers once its drain completes, and the tiers are rebuilt without it. A new upstream takes picks before its first successful check; if it is unreachable, it keeps an equal share of that tier's picks, not of all upstreams as in `random` mode, until the consecutive-failure threshold excludes it. Every upstream within 2ms of the best one is in tier 0, so a single site with sub-millisecond differences behaves like `random`. Only health checks feed the average, so tiers follow latency changes at the pace of `--health-interval`. Existing connections stay where they are.
+
+### Readiness-aware selection
+
+A TCP check only proves that the API server process accepts connections. An API server whose etcd member has lost quorum still accepts them, but fails every request that needs storage, so with `--health-check=tcp` the node keeps sending part of its traffic to it. This happens when a network partition leaves a control-plane node in the minority: the node's own API server stays reachable, the healthy ones may be too, and `random` selection splits requests between them.
+
+With `--health-check=readyz`, every successful TCP check is followed by an HTTPS `GET /readyz` within the same `--health-timeout`. Any status other than `200`, a TLS error, or a timeout marks the upstream not ready. As with TCP checks, two consecutive failures mark it not ready and one success restores it. New connections go to ready upstreams only. If no healthy upstream is ready, selection falls back to every TCP-healthy upstream, so losing quorum everywhere degrades to the `tcp` behavior instead of leaving the node without an API path. Readiness filters before latency tiers, so `--upstream-selection=latency` picks the closest ready upstream. Existing connections stay where they are, and the `/readyz` endpoint of extractedprism itself is unaffected.
+
+The probe connects to the endpoint address and verifies the serving certificate against `--health-check-ca-file` and `--health-check-server-name`; `kubernetes.default.svc` is in the serving certificate of every kubeadm- or Talos-issued API server. `GET /readyz` is allowed to any authenticated client through the default `system:public-info-viewer` ClusterRole. Anonymous requests work only where anonymous authentication is enabled, so on most clusters the probe needs a credential: the node's kubelet client certificate (see the [Talos example](examples/talos/)) or a bearer token. The client certificate and the token file are re-read on every probe, so rotation is picked up without a restart, and a credential that does not exist yet fails the probe instead of startup. On a joining node the kubelet obtains its certificate through this proxy, which works because of the fallback above.
 
 ### Endpoint discovery
 
@@ -213,6 +230,7 @@ The health server also exposes Prometheus metrics at `/metrics`. It binds to `--
 | `extractedprism_discovery_errors_total` | Counter | `provider` | Discovery errors: provider failures, failed Watch calls, watch error events and failed re-lists. A watch stream ending is not counted, including on a dropped connection, and neither is 410 Gone expiry; a dead upstream shows in `health_check_status` instead |
 | `extractedprism_upstream_rtt_seconds` | Gauge | `upstream` | Smoothed health check connect time, including name resolution for hostname endpoints; only with `--upstream-selection=latency`, after the first successful check |
 | `extractedprism_upstream_latency_tier` | Gauge | `upstream` | Latency tier of the upstream, 0 being the closest group; new connections go to the lowest tier with a healthy, non-draining upstream, together with upstreams that have no sample yet. Only with `--upstream-selection=latency`, after the first successful check |
+| `extractedprism_upstream_ready` | Gauge | `upstream` | `/readyz` probe state after the consecutive-failure threshold (1 ready, 0 not ready); new connections prefer ready upstreams. Only with `--health-check=readyz`, after the first probe |
 | `extractedprism_health_check_status` | Gauge | `upstream` | Upstream health state after the consecutive-failure threshold, fed by health checks and client dials (1 healthy, 0 unhealthy). Health checks stop while an upstream drains, so the value holds until it is removed or re-added |
 
 ### Graceful shutdown

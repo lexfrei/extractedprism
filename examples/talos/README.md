@@ -29,6 +29,48 @@ k8sServicePort: "7445"
 
 extractedprism binds its health server on `127.0.0.1`. For a `hostNetwork` pod the kubelet's default probe target is the node IP, not loopback, so the probes **must** set `host: 127.0.0.1` explicitly. Otherwise liveness fails with `connection refused` and the pod enters `CrashLoopBackOff`. The example already does this.
 
+### Readiness check
+
+With the default `--health-check=tcp`, a control-plane node cut off from the etcd majority keeps an API server that accepts connections but cannot serve requests, and the nodes keep sending part of their traffic to it. `--health-check=readyz` steers new connections to API servers that answer `200` on `/readyz` (see [Readiness-aware selection](../../README.md#readiness-aware-selection)).
+
+Talos disables anonymous authentication, so the probe authenticates with the node's kubelet client certificate, verified against the cluster CA. A static pod has no ServiceAccount token, and the kubelet certificate is already present on every node, issued by the cluster and rotated by the kubelet:
+
+```yaml
+            args:
+              # ...
+              - --health-check=readyz
+              - --health-check-ca-file=/etc/kubernetes/pki/ca.crt
+              # The kubelet keeps certificate and key in one file.
+              - --health-check-cert-file=/var/lib/kubelet/pki/kubelet-client-current.pem
+              - --health-check-key-file=/var/lib/kubelet/pki/kubelet-client-current.pem
+            volumeMounts:
+              - name: kubernetes-ca
+                mountPath: /etc/kubernetes/pki/ca.crt
+                readOnly: true
+              - name: kubelet-pki
+                mountPath: /var/lib/kubelet/pki
+                readOnly: true
+            securityContext:
+              # The kubelet client key is readable by root only.
+              runAsUser: 0
+              runAsNonRoot: false
+              readOnlyRootFilesystem: true
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+        volumes:
+          - name: kubernetes-ca
+            hostPath:
+              path: /etc/kubernetes/pki/ca.crt
+              type: File
+          - name: kubelet-pki
+            hostPath:
+              path: /var/lib/kubelet/pki
+              type: DirectoryOrCreate
+```
+
+Mount the directory rather than `kubelet-client-current.pem`: it is a symlink the kubelet replaces on rotation. The directory may be empty on a node that has not joined yet; the probe then fails and selection falls back to TCP until the kubelet has its certificate. The kubelet's identity (`system:node:<name>`) can read `/readyz` through `system:public-info-viewer` and nothing more is needed. Running as root is the cost of reading the kubelet key; a dedicated client certificate in a root-free location avoids it, at the price of issuing and rotating that certificate yourself.
+
 ### Apply it as machine config, not an incremental patch
 
 Deliver this through your machine config template and a full `apply-config`. A Talos strategic-merge patch *appends* to `machine.pods` (and `pods: []` does not clear it), and RFC6902 JSON patches are rejected on a multi-document machine config (for example when an `EthernetConfig` document is present). Rendering and applying the full config avoids both.

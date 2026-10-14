@@ -31,6 +31,7 @@ type Metrics struct {
 	backendHealth    *prometheus.GaugeVec
 	backendRTT       *prometheus.GaugeVec
 	backendTier      *prometheus.GaugeVec
+	backendReady     *prometheus.GaugeVec
 }
 
 // New creates a Metrics with all series registered on a private registry.
@@ -81,20 +82,11 @@ func New() *Metrics {
 			"Smoothed connect time of successful health checks, including name resolution for hostname endpoints. Only exported with --upstream-selection=latency, after the first successful check."),
 		backendTier: newUpstreamGaugeVec("upstream_latency_tier",
 			"Latency tier of the upstream, 0 being the closest group. New connections go to the lowest tier with a healthy, non-draining upstream, together with upstreams that have no sample yet. Only exported with --upstream-selection=latency, after the first successful check."),
+		backendReady: newUpstreamGaugeVec("upstream_ready",
+			"Upstream readiness after the consecutive-failure threshold of /readyz probes (1 ready, 0 not ready). New connections prefer ready upstreams. Only exported with --health-check=readyz, after the first probe."),
 	}
 
-	m.registry.MustRegister(
-		m.connActive,
-		m.connTotal,
-		m.connErrors,
-		m.discoveryUpdates,
-		m.discoveryErrors,
-		m.upstreamsActive,
-		m.upstreamsTotal,
-		m.backendHealth,
-		m.backendRTT,
-		m.backendTier,
-	)
+	m.register()
 
 	return m
 }
@@ -164,6 +156,7 @@ func (m *Metrics) RemoveBackend(upstream string) {
 	m.connErrors.DeleteLabelValues(upstream)
 	m.backendRTT.DeleteLabelValues(upstream)
 	m.backendTier.DeleteLabelValues(upstream)
+	m.backendReady.DeleteLabelValues(upstream)
 }
 
 // SetBackendRTT records the smoothed health check connect time of an upstream.
@@ -174,4 +167,30 @@ func (m *Metrics) SetBackendRTT(upstream string, rtt time.Duration) {
 // SetBackendTier records the latency tier of an upstream.
 func (m *Metrics) SetBackendTier(upstream string, tier int) {
 	m.backendTier.WithLabelValues(upstream).Set(float64(tier))
+}
+
+// SetBackendReady records the readiness state of an upstream.
+func (m *Metrics) SetBackendReady(upstream string, ready bool) {
+	value := 0.0
+	if ready {
+		value = 1
+	}
+
+	m.backendReady.WithLabelValues(upstream).Set(value)
+}
+
+func (m *Metrics) register() {
+	m.registry.MustRegister(
+		m.connActive,
+		m.connTotal,
+		m.connErrors,
+		m.discoveryUpdates,
+		m.discoveryErrors,
+		m.upstreamsActive,
+		m.upstreamsTotal,
+		m.backendHealth,
+		m.backendRTT,
+		m.backendTier,
+		m.backendReady,
+	)
 }
