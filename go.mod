@@ -1,6 +1,6 @@
 module github.com/lexfrei/extractedprism
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/cockroachdb/errors v1.14.0
