@@ -34,11 +34,11 @@ jobs:
           # action's 0.34.1 default (v0.69.1) was yanked: the git tag still
           # exists, so the installer reports "found version" and then 404s on
           # the missing release asset, failing the job deterministically.
-          version: 'v0.76.0'
+          version: 'v0.76.1'
 
       - name: Upload Trivy filesystem results to GitHub Security
         if: (success() || failure()) && github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           sarif_file: 'trivy-fs-results.sarif'
           category: 'trivy-filesystem'
@@ -62,7 +62,7 @@ jobs:
           # Pin the linter version for reproducible CI. An unpinned "latest"
           # silently upgrades golangci-lint, which can fail previously-green
           # code when a new release adds or tightens linters.
-          version: v2.14.0
+          version: v2.15.0
           args: --timeout=5m
 
   test:
