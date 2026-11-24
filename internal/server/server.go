@@ -466,7 +466,10 @@ func (srv *Server) runHealth(ctx context.Context) error {
 
 		// Wait for the Start goroutine to return after shutdown to prevent
 		// it from logging via the test logger after the test has finished.
-		<-errCh
+		startErr := <-errCh
+		if startErr != nil && !errors.Is(startErr, context.Canceled) {
+			srv.logger.Warn("health server stopped with error during shutdown", zap.Error(startErr))
+		}
 
 		return shutErr
 	case err := <-errCh:
