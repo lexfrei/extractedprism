@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -446,6 +447,66 @@ func TestRunHealth_StartErrorPropagates(t *testing.T) {
 		assert.Contains(t, err.Error(), "address already in use")
 	case <-time.After(runReturnTimeout):
 		t.Fatal("Run blocked on health start error")
+	}
+}
+
+// blockingHealthServer follows the real health server contract: Start
+// returns stopErr only after Shutdown has been called.
+type blockingHealthServer struct {
+	stopErr error
+	stop    chan struct{}
+	once    sync.Once
+}
+
+func (m *blockingHealthServer) Start(_ context.Context) error {
+	<-m.stop
+
+	return m.stopErr
+}
+
+func (m *blockingHealthServer) Shutdown(_ context.Context) error {
+	m.once.Do(func() { close(m.stop) })
+
+	return nil
+}
+
+func TestRunHealth_StartErrorDuringShutdownIsLogged(t *testing.T) {
+	tests := []struct {
+		name     string
+		stopErr  error
+		wantWarn int
+	}{
+		{name: "real error is logged", stopErr: errors.New("accept: boom"), wantWarn: 1},
+		{name: "wrapped cancellation is not logged", stopErr: errors.Wrap(context.Canceled, "health server listen"), wantWarn: 0},
+		{name: "clean exit is not logged", stopErr: nil, wantWarn: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			core, logs := observer.New(zap.WarnLevel)
+
+			srv, err := server.New(validConfig(), zap.New(core),
+				server.WithHealthServer(&blockingHealthServer{stopErr: tt.stopErr, stop: make(chan struct{})}),
+			)
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			errCh := make(chan error, 1)
+
+			go func() { errCh <- srv.Run(ctx) }()
+
+			cancel()
+
+			select {
+			case err := <-errCh:
+				assert.NoError(t, err)
+			case <-time.After(runReturnTimeout):
+				t.Fatal("Run did not return after cancellation")
+			}
+
+			entries := logs.FilterMessage("health server stopped with error during shutdown").All()
+			assert.Len(t, entries, tt.wantWarn)
+		})
 	}
 }
 
